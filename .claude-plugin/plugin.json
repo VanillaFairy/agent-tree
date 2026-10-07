@@ -1,0 +1,6 @@
+{
+  "name": "agent-tree",
+  "version": "0.1.0",
+  "description": "Live graphical tree of this session's subagents in a side pane",
+  "types": "./types/index.d.ts"
+}
