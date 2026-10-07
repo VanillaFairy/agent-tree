@@ -2,7 +2,7 @@
 
 ## Summary
 
-A Claude Code plugin that draws your session's subagents as a live graph in a side pane. You can see who spawned whom, what each agent is doing right now, and how long its tool calls take, so you don't have to dig through the transcript to find out.
+A Claude Code plugin that draws the current session's subagents as a live tree in a side pane. You can see who spawned whom and what each agent is doing right now, so you don't have to dig through the transcript to find out.
 
 ## Installation
 
@@ -34,21 +34,19 @@ If you load several plugin folders this way, separate them with `;` on Windows a
 
 ## How to use
 
-The pane pops open on its own the first time a subagent starts. You can also open it whenever you like with `/agent-tree`.
+The pane opens on its own when a session starts, and each session shows its own tree, so switching sessions switches the tree too. If you've closed it, `/agent-tree` brings it back.
 
-![The agent-tree pane: graph, selected agent, tool timeline](docs/screenshot.png)
+![The agent-tree pane showing a session with six subagents](docs/screenshot.png)
 
 (The screenshot uses made-up sample data.)
 
-The main session sits at the top of the graph, and each agent hangs under the one that spawned it. Running agents are blue with a pulsing dot, finished ones green, failed ones red and stopped ones grey. Every card shows the agent's type, how many tools it has called, how long it's been going, and the tool it's running right now.
+Your session sits at the top, named after its project folder, and each agent hangs under the one that spawned it. The dot shows where an agent is at: blue while it runs, green when it's done, red if it failed, grey if it was stopped. A running agent's card also shows the tool it's using right now, and a small pulse runs down the line into it.
 
-Use `−` and `+` to zoom and the arrows to pan. `Fit` brings the whole graph back into view. `Hide finished` clears out branches where nothing is still running or failed.
+Scroll over the tree to zoom in and out around the pointer. Zoom all the way out and the whole tree fits again.
 
-Pick an agent from the dropdown to look at it more closely. You'll see what it's doing now and its last 14 tool calls as a timeline, colored by kind, where a longer bar means a slower call. From there, `Center` zooms in on it, `Collapse` folds its children into a `+N` badge, and `Stop` kills it if it's still running. Once an agent finishes, you also get its final message and a link to its transcript.
+If you open a subagent's transcript, its card gets an outline so you can find it in the tree.
 
-Hover over a card or a timeline row if the text is cut off.
-
-Colors follow your Claude Code theme, color-blind themes included. With `auto`, they follow your system's light or dark setting. In the terminal you get a text version of the tree with the same controls.
+Colors follow your Claude Code theme, color-blind themes included. With `auto`, they follow your system's light or dark setting. In the terminal you get a plain text version of the tree.
 
 ## License
 
