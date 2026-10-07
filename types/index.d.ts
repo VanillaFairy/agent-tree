@@ -9,8 +9,6 @@ export type AgentNode = {
   startedAt: number
   endedAt?: number
   toolCount: number
-  lastMessage?: string
-  transcriptPath?: string
 }
 
 export type ToolEvent = {
@@ -23,12 +21,10 @@ export type ToolEvent = {
 }
 
 export type ViewState = {
+  // 1 shows the whole tree; larger values magnify it.
   zoom: number
-  // Graph coordinates the view centres on; absent, the whole graph is fitted.
+  // Graph coordinates the view centres on; absent, the whole tree is fitted.
   center?: { x: number; y: number }
-  hideFinished: boolean
-  collapsed: string[]
-  selected: string
 }
 
 declare module 'claude-code' {
@@ -42,6 +38,8 @@ declare module 'claude-code' {
       mainToolCount: number
       // Claude Code's `theme` setting as /config names it (`dark`, `light-daltonized`, `auto`, ...).
       theme: string
+      // The session's project folder name, the root node's label.
+      project: string
     }
   }
 }

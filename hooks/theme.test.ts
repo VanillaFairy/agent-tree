@@ -8,7 +8,7 @@ test('a light or dark theme is drawn as set, whatever the system prefers', () =>
   for (const theme of ['dark', 'light', 'dark-daltonized', 'light-ansi']) {
     expect(themeCss(theme)).not.toContain('prefers-color-scheme')
   }
-  expect(token(themeCss('dark'), 'bg')).not.toBe(token(themeCss('light'), 'bg'))
+  expect(token(themeCss('dark'), 'ink')).not.toBe(token(themeCss('light'), 'ink'))
 })
 
 test('auto, or a theme name we do not know, follows the system', () => {

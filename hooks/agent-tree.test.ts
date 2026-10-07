@@ -1,6 +1,7 @@
 import { expect, mock, test } from 'claude-code/testing'
 import type { AgentInfo } from 'claude-code'
 
+import { layout, viewport, zoomAt } from './graph'
 import { merge } from './register'
 
 const PANE = {
@@ -9,7 +10,7 @@ const PANE = {
   props: {
     title: 'Agents',
     isFocused: false,
-    bodyColumns: 60,
+    bodyColumns: 80,
     placement: 'dock',
     scroll: { offset: 0, bodyRows: 30 },
     view: {},
@@ -40,38 +41,61 @@ test('a spawned subagent shows nested under its parent, on every surface', async
   await term.unmount()
 })
 
-test('collapsing an agent folds its children into a count', async ($, on) => {
+test('the agent whose transcript is on screen is marked in the tree', async ($, on) => {
   mock.clock(on, { now: 1000 })
-  on('agent.list', async () => ({ value: [PARENT, CHILD] }))
+  on('agent.list', async () => ({ value: [PARENT] }))
   on('classic.SubagentStart', async () => ({}))
-  await $.classic.SubagentStart({ agent_id: 'a2', agent_type: 'scout' })
+  await $.classic.SubagentStart({ agent_id: 'a1', agent_type: 'Explore' })
 
-  const desk = await $.ui.mount({ plugin: 'agent-tree', surface: 'desktop', ...PANE })
-  await desk.select({ key: 'agent', value: 'a1' })
-  await desk.press({ key: 'fold' })
-  const alt = String((await desk.find({ type: 'Svg' }))?.props.alt)
-  expect(alt).toContain(`${PARENT.description} (Explore, running) +1 folded`)
-  expect(alt).not.toContain(CHILD.description)
-  await desk.unmount()
+  const plain = await $.ui.mount({ plugin: 'agent-tree', surface: 'desktop', ...PANE })
+  expect(String((await plain.find({ type: 'Svg' }))?.props.source)).not.toContain('class="focus"')
+  await plain.unmount()
+
+  const viewing = await $.ui.mount({
+    plugin: 'agent-tree',
+    surface: 'desktop',
+    ...PANE,
+    props: { ...PANE.props, view: { agentId: 'a1' } },
+  })
+  expect(String((await viewing.find({ type: 'Svg' }))?.props.source)).toContain('class="focus"')
+  await viewing.unmount()
 })
 
-test('a running tool call shows as live activity, and is gone once it returns', async ($, on) => {
+test('a running tool call shows on its card, and is gone once it returns', async ($, on) => {
   mock.clock(on, { now: 1000 })
   on('agent.list', async () => ({ value: [] }))
-  let during: unknown
+  let during = ''
   on('tool.call', async () => {
     const desk = await $.ui.mount({ plugin: 'agent-tree', surface: 'desktop', ...PANE })
-    during = await desk.find({ type: 'Text', text: /▸ Read src\/app\.ts/ })
+    during = String((await desk.find({ type: 'Svg' }))?.props.source)
     await desk.unmount()
     return { result: { type: 'text', file: { filePath: 'src/app.ts', content: '', numLines: 0, startLine: 1, totalLines: 0 } } }
   })
   await $.tool.call({ tool: 'Read', file_path: 'src/app.ts' })
-  expect(during).toBeDefined()
+  expect(during).toContain('Read src/app.ts')
 
   const after = await $.ui.mount({ plugin: 'agent-tree', surface: 'desktop', ...PANE })
-  expect(await after.find({ type: 'Text', text: /▸ Read/ })).toBeUndefined()
-  expect(await after.find({ type: 'Text', text: /Main session · 1 tools/ })).toBeDefined()
+  expect(String((await after.find({ type: 'Svg' }))?.props.source)).not.toContain('Read src/app.ts')
   await after.unmount()
+})
+
+test('zooming keeps the point under the pointer still, and zooming out fits the tree again', () => {
+  const lay = layout(merge({}, [PARENT, CHILD, { ...CHILD, id: 'a3', parentId: undefined }], 0))
+  const frame = { width: 1000, height: 600 }
+  const fit = { zoom: 1 }
+  const at = (v: { zoom: number; center?: { x: number; y: number } }, fx: number, fy: number) => {
+    const vp = viewport(lay, v, frame)
+    return { x: vp.x + fx * vp.w, y: vp.y + fy * vp.h }
+  }
+
+  const inward = zoomAt(lay, fit, frame, 0.3, 0.4, 2)
+  expect(inward.zoom).toBe(2)
+  const before = at(fit, 0.3, 0.4)
+  const after = at(inward, 0.3, 0.4)
+  expect(Math.abs(after.x - before.x) < 1e-6).toBe(true)
+  expect(Math.abs(after.y - before.y) < 1e-6).toBe(true)
+
+  expect(zoomAt(lay, inward, frame, 0.9, 0.9, 0.25)).toEqual(fit)
 })
 
 test('an agent the engine stops listing while running is taken as ended, keeping its counts', () => {
