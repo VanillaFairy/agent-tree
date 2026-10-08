@@ -275,6 +275,38 @@ test('an agent the engine stops listing while running is taken as ended, keeping
   expect(relisted?.startedAt).toBe(1000)
 })
 
+test('a running agent’s run time shows whole however long its title, and turns over within a quarter second', async ($, on) => {
+  const clock = mock.clock(on, { now: 1000 })
+  let listed: AgentInfo[] = []
+  on('agent.list', async () => ({ value: listed }))
+  on('classic.SubagentStart', async () => ({}))
+  on('command.register', async () => ({ value: undefined }))
+  on('session.cwd', async () => ({ value: '/work/app' }))
+  on('config.list', async () => ({ value: [] }))
+  on('ui.open', async () => ({ value: undefined }))
+  on('session.start', async (_, e) => ({ cwd: e.cwd }))
+  await $.session.start({ cwd: '/work/app', surface: 'desktop', isInteractive: true })
+  // Off the tick's beat, so a slower tick would show the new second late.
+  await clock.advance(100)
+  const start = clock.now()
+  listed = [{ ...PARENT, description: 'A very long description of the work '.repeat(3) }]
+  await $.classic.SubagentStart({ agent_id: 'a1', agent_type: 'Explore' })
+
+  const card = async () => {
+    const ui = await $.ui.mount({ plugin: 'agent-tree', surface: 'desktop', ...PANE })
+    const source = String((await ui.find({ type: 'Svg' }))?.props.source)
+    await ui.unmount()
+    return { time: source.match(/class="time"[^>]*>([^<]*)</)?.[1], title: source.match(/class="title"[^>]*>([^<]*)</)?.[1] ?? '' }
+  }
+  for (const at of [999, 1250, 75_250]) {
+    await clock.set(start + at)
+    const { time, title } = await card()
+    // At most a quarter second behind the true run time.
+    expect(time).toBe(elapsed(at - 250))
+    expect(title.endsWith('…')).toBe(true)
+  }
+})
+
 test('the run time keeps counting seconds past an hour', () => {
   expect(elapsed(3_725_000)).toBe('1h 02m 05s')
 })

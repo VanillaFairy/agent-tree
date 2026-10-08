@@ -21,6 +21,9 @@ const SPARE_ROWS = 1
 const ZOOM_STEP = 1.25
 // Of the window's width or height, about how far one ◀ ▶ ▲ ▼ press moves it.
 const PAN_STEP = 0.5
+// How often a running agent's clock is checked. A run time turns over once a
+// second; checking four times as often shows each new second within 250 ms.
+const TICK_MS = 250
 
 const WIDTH: ViewState = { zoom: 1 }
 
@@ -85,12 +88,14 @@ export function merge(
   return next
 }
 
-// Writes only what changed, since every write redraws the pane.
+// Writes only what changed, since every write redraws the pane: `now` only
+// when a running agent's run time would read differently.
 async function refresh($: EngineInterface): Promise<void> {
-  const [list, at, prev] = await Promise.all([$.agent.list(), $.clock.now(), read($, nodes)])
+  const [list, at, prev, was] = await Promise.all([$.agent.list(), $.clock.now(), read($, nodes), read($, now)])
   const next = merge(prev, list, at)
   if (JSON.stringify(next) !== JSON.stringify(prev)) await update($, nodes, () => next)
-  if (Object.values(next).some(n => n.status === 'running')) await update($, now, () => at)
+  const turned = (n: AgentNode) => n.status === 'running' && elapsed(at - n.startedAt) !== elapsed(was - n.startedAt)
+  if (Object.values(next).some(turned)) await update($, now, () => at)
 }
 
 async function tick($: EngineInterface): Promise<void> {
@@ -110,8 +115,8 @@ async function syncTheme($: EngineInterface): Promise<void> {
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     await $.command.register({ name: 'agent-tree', description: 'Show this session’s subagent tree' })
-    // Redraws only while an agent runs, so its elapsed time counts up.
-    $.clock.every(1000, () => {
+    // Redraws only while an agent runs, so its run time counts up.
+    $.clock.every(TICK_MS, () => {
       tick($).catch(() => undefined)
     })
     // `/theme` and the app's own appearance setting may change it without a
