@@ -310,3 +310,19 @@ test('a running agent’s run time shows whole however long its title, and turns
 test('the run time keeps counting seconds past an hour', () => {
   expect(elapsed(3_725_000)).toBe('1h 02m 05s')
 })
+
+test('an agent type too long for one line goes on to a second, the tool count with it', async ($, on) => {
+  mock.clock(on, { now: 1000 })
+  const type = 'vf-superpowers:reviewer-xhigh'
+  on('agent.list', async () => ({ value: [{ ...PARENT, type }] }))
+  on('classic.SubagentStart', async () => ({}))
+  await $.classic.SubagentStart({ agent_id: 'a1', agent_type: type })
+
+  const ui = await $.ui.mount({ plugin: 'agent-tree', surface: 'desktop', ...PANE })
+  const source = String((await ui.find({ type: 'Svg' }))?.props.source)
+  await ui.unmount()
+  const lines = [...source.matchAll(/class="meta"[^>]*>([^<]*)</g)].map(m => m[1])
+  expect(lines.length).toBe(2)
+  expect(lines.join(' ')).toContain(type)
+  expect(lines.join(' ')).toContain('0 tools')
+})

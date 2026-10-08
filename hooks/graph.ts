@@ -4,7 +4,7 @@ import { current } from './activity'
 export const ROOT = 'main'
 
 const NODE_W = 212
-const NODE_H = 60
+const NODE_H = 74
 const GAP_X = 48
 const GAP_Y = 12
 const PAD = 28
@@ -239,27 +239,41 @@ function wire(from: Placed, to: Placed): string {
   return `M${x0} ${y0} H${mid - r} Q${mid} ${y0} ${mid} ${y0 + dir * r} V${y1 - dir * r} Q${mid} ${y1} ${mid + r} ${y1} H${x1}`
 }
 
+// Splits `text` over two lines of `px`, breaking after a space, `:`, `-` or
+// `_` where it can; only the second line is ever clipped.
+function twoLines(text: string, px: number, glyph: number = GLYPH.meta): [string, string] {
+  const room = Math.max(4, Math.floor(px / glyph))
+  if (text.length <= room) return [text, '']
+  const head = text.slice(0, room + 1)
+  const cut = Math.max(head.lastIndexOf(' '), head.lastIndexOf(':') + 1, head.lastIndexOf('-') + 1, head.lastIndexOf('_') + 1)
+  const at = cut > room / 3 ? cut : room
+  return [text.slice(0, at).trimEnd(), clip(text.slice(at).trimStart(), px, glyph)]
+}
+
 function agentCard(p: Placed, n: AgentNode, events: readonly ToolEvent[] | undefined, now: number, focus: boolean): string {
   const x = p.x
   const y = p.y
   const tx = x + 26
   const room = NODE_W - 36
   const doing = n.status === 'running' ? current(events) : undefined
-  const meta = `${n.type}   ${n.toolCount} tools`
+  const [meta, more] = twoLines(`${n.type}   ${n.toolCount} tools`, room)
   // The run time sits on the dot's row at the card's right edge, and the
   // title gives way to it, never the other way round.
   const time = elapsed((n.endedAt ?? now) - n.startedAt)
   const timeRoom = time.length * GLYPH.time + 8
   const third =
     n.status === 'running'
-      ? `<text class="doing" x="${tx}" y="${y + 50}">${esc(clip(doing ? `${doing.tool} ${doing.arg}` : 'thinking…', room, GLYPH.mono))}</text>`
-      : `<text class="word ${n.status}" x="${tx}" y="${y + 50}">${STATUS_WORD[n.status]}</text>`
+      ? `<text class="doing" x="${tx}" y="${y + 64}">${esc(clip(doing ? `${doing.tool} ${doing.arg}` : 'thinking…', room, GLYPH.mono))}</text>`
+      : `<text class="word ${n.status}" x="${tx}" y="${y + 64}">${STATUS_WORD[n.status]}</text>`
   return `<g class="${focus ? 'focus' : ''}">
 <rect class="card" x="${x}" y="${y}" width="${NODE_W}" height="${NODE_H}" rx="10"/>
 <circle class="dot ${n.status}" cx="${x + 14}" cy="${y + 17}" r="3.5"/>
 <text class="title" x="${tx}" y="${y + 21}">${esc(clip(n.description, room - timeRoom, GLYPH.title))}</text>
 <text class="time" x="${x + NODE_W - 10}" y="${y + 21}">${time}</text>
-<text class="meta" x="${tx}" y="${y + 36}">${esc(clip(meta, room))}</text>${third}</g>`
+${more === ''
+    ? `<text class="meta" x="${tx}" y="${y + 43}">${esc(meta)}</text>`
+    : `<text class="meta" x="${tx}" y="${y + 36}">${esc(meta)}</text>
+<text class="meta" x="${tx}" y="${y + 50}">${esc(more)}</text>`}${third}</g>`
 }
 
 // Right-aligned against its column's edge, where the wires leave it.
