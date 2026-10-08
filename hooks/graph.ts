@@ -149,12 +149,14 @@ export function canPan(lay: Layout, view: ViewState, frame: Frame, axis: Axis, d
   return direction < 0 ? at > 0.5 : at + room < length - 0.5
 }
 
+// A stopwatch reading: whole seconds gone, seconds shown at every length.
 export function elapsed(ms: number): string {
-  const s = Math.max(0, Math.round(ms / 1000))
+  const s = Math.max(0, Math.floor(ms / 1000))
+  const pad = (n: number) => String(n).padStart(2, '0')
   if (s < 60) return `${s}s`
   const m = Math.floor(s / 60)
-  if (m < 60) return `${m}m ${String(s % 60).padStart(2, '0')}s`
-  return `${Math.floor(m / 60)}h ${String(m % 60).padStart(2, '0')}m`
+  if (m < 60) return `${m}m ${pad(s % 60)}s`
+  return `${Math.floor(m / 60)}h ${pad(m % 60)}m ${pad(s % 60)}s`
 }
 
 function esc(text: string): string {

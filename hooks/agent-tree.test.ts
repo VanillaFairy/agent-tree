@@ -3,7 +3,7 @@ import type { TestBody } from 'claude-code/testing'
 import type { AgentInfo } from 'claude-code'
 
 import type { ViewState } from '../types'
-import { SLIDE_MS, canPan, layout, panBy, viewport } from './graph'
+import { SLIDE_MS, canPan, elapsed, layout, panBy, viewport } from './graph'
 import { CELL_H, TOOLBAR_ROWS, merge } from './register'
 
 const PANE = {
@@ -273,4 +273,8 @@ test('an agent the engine stops listing while running is taken as ended, keeping
   const relisted = merge(after ? { a1: after } : {}, [{ ...PARENT, status: 'failed' }], 9000).a1
   expect(relisted?.status).toBe('failed')
   expect(relisted?.startedAt).toBe(1000)
+})
+
+test('the run time keeps counting seconds past an hour', () => {
+  expect(elapsed(3_725_000)).toBe('1h 02m 05s')
 })
