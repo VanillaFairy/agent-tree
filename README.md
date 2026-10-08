@@ -40,9 +40,17 @@ The pane opens on its own when a session starts, and each session shows its own 
 
 (The screenshot uses made-up sample data.)
 
-Your session sits at the top, named after its project folder, and each agent hangs under the one that spawned it. The dot shows where an agent is at: blue while it runs, green when it's done, red if it failed, grey if it was stopped. A running agent's card also shows the tool it's using right now, and a small pulse runs down the line into it.
+The tree reads left to right. Your session sits in the first column, named after its project folder, the agents it spawned in the next, their own agents in the one after that, and so on. The dot shows where an agent is at: blue while it runs, green when it's done, red if it failed, grey if it was stopped. A running agent's card also shows the tool it's using right now, and a small pulse runs along the line into it.
 
-Scroll over the tree to zoom in and out around the pointer. Zoom all the way out and the whole tree fits again.
+The toolbar above the tree stays put:
+
+- **−** and **+** zoom out and in, and **Fit** shows the whole tree.
+- **◀ ▶ ▲ ▼** show up when the tree is bigger than the pane, and slide it a step at a time. A dimmed arrow means you're already at that edge.
+- **Hide done** leaves out finished agents, except ones that still have something running under them. Press it again to bring them back.
+
+On the desktop you can also drag the tree around. Drag with the middle or right mouse button and the tree follows the pointer. With the left button it works too, but the desktop holds the pane still while that button is down, so the tree jumps to where you let go.
+
+The mouse wheel doesn't zoom or scroll the tree. The desktop only tells a plugin about the wheel when the pane itself scrolls, and this pane never does, so the toolbar can stay in place.
 
 If you open a subagent's transcript, its card gets an outline so you can find it in the tree.
 
