@@ -1,8 +1,10 @@
 import { expect, mock, test } from 'claude-code/testing'
+import type { TestBody } from 'claude-code/testing'
 import type { AgentInfo } from 'claude-code'
 
-import { layout, viewport, zoomAt } from './graph'
-import { merge } from './register'
+import type { ViewState } from '../types'
+import { SLIDE_MS, canPan, layout, panBy, viewport } from './graph'
+import { CELL_H, TOOLBAR_ROWS, merge } from './register'
 
 const PANE = {
   component: 'Pane',
@@ -79,23 +81,185 @@ test('a running tool call shows on its card, and is gone once it returns', async
   await after.unmount()
 })
 
-test('zooming keeps the point under the pointer still, and zooming out fits the tree again', () => {
-  const lay = layout(merge({}, [PARENT, CHILD, { ...CHILD, id: 'a3', parentId: undefined }], 0))
-  const frame = { width: 1000, height: 600 }
-  const fit = { zoom: 1 }
-  const at = (v: { zoom: number; center?: { x: number; y: number } }, fx: number, fy: number) => {
-    const vp = viewport(lay, v, frame)
-    return { x: vp.x + fx * vp.w, y: vp.y + fy * vp.h }
+test('the tree runs left to right: children one column right of their parent, siblings stacked', () => {
+  const lay = layout(merge({}, [PARENT, CHILD, { ...CHILD, id: 'a3' }], 0))
+  const at = (id: string) => lay.placed.find(p => p.id === id)
+  const [parent, first, second] = [at('a1'), at('a2'), at('a3')]
+  if (!parent || !first || !second) throw new Error('layout dropped a node')
+  expect(first.x > parent.x).toBe(true)
+  expect(second.x).toBe(first.x)
+  expect(second.y > first.y).toBe(true)
+  expect(parent.y).toBe((first.y + second.y) / 2)
+})
+
+const MANY: AgentInfo[] = Array.from({ length: 30 }, (_, i) => ({ ...CHILD, id: `k${i}`, parentId: 'a1' }))
+
+type Drawn = { x: number; y: number; w: number; h: number; height: number }
+type Engine = Parameters<TestBody>[0]
+type On = Parameters<TestBody>[1]
+
+function drawnOf(source: string): Drawn {
+  const [x = NaN, y = NaN, w = NaN, h = NaN] = (source.match(/viewBox="([^"]+)"/)?.[1] ?? '').split(' ').map(Number)
+  return { x, y, w, h, height: Number(source.match(/ height="([\d.]+)"/)?.[1]) }
+}
+
+async function drawnAfter($: Engine, ...keys: string[]): Promise<Drawn> {
+  const ui = await $.ui.mount({ plugin: 'agent-tree', surface: 'desktop', ...PANE })
+  for (const key of keys) await ui.press({ key })
+  await ui.unmount()
+  const again = await $.ui.mount({ plugin: 'agent-tree', surface: 'desktop', ...PANE })
+  const source = String((await again.find({ type: 'Svg' }))?.props.source)
+  await again.unmount()
+  return drawnOf(source)
+}
+
+async function startMany($: Engine, on: On) {
+  mock.clock(on, { now: 1000 })
+  on('agent.list', async () => ({ value: [PARENT, ...MANY] }))
+  on('classic.SubagentStart', async () => ({}))
+  await $.classic.SubagentStart({ agent_id: 'a1', agent_type: 'Explore' })
+}
+
+const MANY_LAYOUT = layout(merge({}, [PARENT, ...MANY], 0))
+
+test('the drawing fits under the toolbar, so the pane never scrolls, and + and − change its scale', async ($, on) => {
+  await startMany($, on)
+  const room = (PANE.props.scroll.bodyRows - TOOLBAR_ROWS) * CELL_H
+  const start = await drawnAfter($)
+  expect(start.height <= room).toBe(true)
+
+  const zoomedIn = await drawnAfter($, 'zoom-in')
+  expect(zoomedIn.height).toBe(start.height)
+  expect(zoomedIn.w < start.w && zoomedIn.h < start.h).toBe(true)
+
+  const zoomedOut = await drawnAfter($, 'zoom-out', 'zoom-out')
+  expect(zoomedOut.w > start.w && zoomedOut.h > start.h).toBe(true)
+})
+
+test('Fit shows the whole tree', async ($, on) => {
+  await startMany($, on)
+  const fitted = await drawnAfter($, 'fit')
+  expect(fitted.w >= MANY_LAYOUT.width - 0.2 && fitted.h >= MANY_LAYOUT.height - 0.2).toBe(true)
+})
+
+test('the arrows show only along an axis the tree overflows, and pan it within its edges', async ($, on) => {
+  await startMany($, on)
+  const ui = await $.ui.mount({ plugin: 'agent-tree', surface: 'desktop', ...PANE })
+  expect(await ui.find({ key: 'pan-right' })).toBeUndefined()
+  expect(await ui.find({ key: 'pan-down' })).toBeDefined()
+  await ui.unmount()
+
+  const down = await drawnAfter($, 'pan-down')
+  expect(down.y > 0).toBe(true)
+  const bottom = await drawnAfter($, ...Array.from({ length: 20 }, () => 'pan-down'))
+  expect(Math.abs(bottom.y + bottom.h - MANY_LAYOUT.height) < 0.2).toBe(true)
+  const top = await drawnAfter($, ...Array.from({ length: 20 }, () => 'pan-up'))
+  expect(top.y).toBe(0)
+
+  const zoomed = await drawnAfter($, 'zoom-in', 'zoom-in', 'zoom-in')
+  const right = await drawnAfter($, 'pan-right')
+  expect(right.x > zoomed.x).toBe(true)
+  const farRight = await drawnAfter($, ...Array.from({ length: 12 }, () => 'pan-right'))
+  expect(Math.abs(farRight.x + farRight.w - MANY_LAYOUT.width) < 0.2).toBe(true)
+  const back = await drawnAfter($, ...Array.from({ length: 12 }, () => 'pan-left'))
+  expect(back.x).toBe(0)
+})
+
+test('every arrow step moves the same distance, the last landing on the edge', () => {
+  const lay = MANY_LAYOUT
+  const frame = { width: 736, height: 500 }
+  for (const axis of ['x', 'y'] as const) {
+    for (const zoom of [1.1, 1.5625, 2, 3.7]) {
+      for (const direction of [1, -1]) {
+        const far = direction > 0 ? 0 : 1e9
+        let view: ViewState = { zoom, left: far, top: far }
+        const at = () => {
+          const win = viewport(lay, view, frame)
+          return axis === 'x' ? { pos: win.x, room: win.w, length: lay.width } : { pos: win.y, room: win.h, length: lay.height }
+        }
+        const positions = [at().pos]
+        for (let i = 0; i < 50 && canPan(lay, view, frame, axis, direction); i++) {
+          view = panBy(lay, view, frame, axis, direction, 0.5)
+          positions.push(at().pos)
+        }
+        const steps = positions.slice(1).map((p, i) => Math.abs(p - (positions[i] ?? p)))
+        expect(steps.length > 0).toBe(true)
+        for (const step of steps) expect(Math.abs(step - (steps[0] ?? 0)) < 1e-6).toBe(true)
+        const end = at()
+        expect(direction > 0 ? Math.abs(end.pos + end.room - end.length) < 1e-6 : end.pos === 0).toBe(true)
+      }
+    }
   }
+})
 
-  const inward = zoomAt(lay, fit, frame, 0.3, 0.4, 2)
-  expect(inward.zoom).toBe(2)
-  const before = at(fit, 0.3, 0.4)
-  const after = at(inward, 0.3, 0.4)
-  expect(Math.abs(after.x - before.x) < 1e-6).toBe(true)
-  expect(Math.abs(after.y - before.y) < 1e-6).toBe(true)
+test('an arrow slides the drawing from the old view to the new one, then settles still', async ($, on) => {
+  const clock = mock.clock(on, { now: 1000 })
+  on('agent.list', async () => ({ value: [PARENT, ...MANY] }))
+  on('classic.SubagentStart', async () => ({}))
+  await $.classic.SubagentStart({ agent_id: 'a1', agent_type: 'Explore' })
+  const before = await drawnAfter($)
 
-  expect(zoomAt(lay, inward, frame, 0.9, 0.9, 0.25)).toEqual(fit)
+  const ui = await $.ui.mount({ plugin: 'agent-tree', surface: 'desktop', ...PANE })
+  await ui.press({ key: 'pan-down' })
+  const sliding = String((await ui.find({ type: 'Svg' }))?.props.source)
+  const [, from = '', to = ''] = sliding.match(/<animate attributeName="viewBox" from="([^"]+)" to="([^"]+)"/) ?? []
+  expect(Number(from.split(' ')[1])).toBe(before.y)
+  expect(Number(to.split(' ')[1]) > before.y).toBe(true)
+  expect(sliding).toContain(`viewBox="${to}"`)
+
+  await clock.advance(SLIDE_MS)
+  const settled = String((await ui.find({ type: 'Svg' }))?.props.source)
+  expect(settled).not.toContain('<animate')
+  expect(settled).toContain(`viewBox="${to}"`)
+  await ui.unmount()
+})
+
+test('dragging the drawing with any button moves the view by as much as the pointer moved, and back again', async ($, on) => {
+  await startMany($, on)
+  const before = await drawnAfter($, 'zoom-in', 'zoom-in', 'zoom-in')
+  const perColumn = before.w / PANE.props.bodyColumns
+  const perRow = (before.h * CELL_H) / before.height
+
+  for (const button of ['left', 'middle', 'right'] as const) {
+    const ui = await $.ui.mount({ plugin: 'agent-tree', surface: 'desktop', ...PANE })
+    const current = async () => drawnOf(String((await ui.find({ type: 'Svg' }))?.props.source))
+    await ui.pointer({ type: 'down', button, x: 30, y: 10, in: 'drag' })
+    await ui.pointer({ type: 'move', button, x: 20, y: 6, in: 'drag' })
+    const dragged = await current()
+    await ui.pointer({ type: 'move', button, x: 30, y: 10, in: 'drag' })
+    const back = await current()
+    await ui.pointer({ type: 'up', button, x: 30, y: 10, in: 'drag' })
+    await ui.unmount()
+
+    expect(Math.abs(dragged.x - before.x - 10 * perColumn) < 0.2).toBe(true)
+    expect(Math.abs(dragged.y - before.y - 4 * perRow) < 0.2).toBe(true)
+    expect(Math.abs(back.x - before.x) < 0.2 && Math.abs(back.y - before.y) < 0.2).toBe(true)
+  }
+})
+
+test('hiding done agents keeps a done agent with work still running under it', async ($, on) => {
+  mock.clock(on, { now: 1000 })
+  const doneParent = { ...PARENT, status: 'completed' }
+  const doneLeaf: AgentInfo = { id: 'a3', description: 'Finished leaf', type: 'scout', status: 'completed' }
+  on('agent.list', async () => ({ value: [doneParent, CHILD, doneLeaf] }))
+  on('classic.SubagentStart', async () => ({}))
+  await $.classic.SubagentStart({ agent_id: 'a2', agent_type: 'scout' })
+
+  for (const surface of ['desktop', 'terminal'] as const) {
+    const ui = await $.ui.mount({ plugin: 'agent-tree', surface, ...PANE })
+    await ui.press({ key: 'done' })
+    await ui.unmount()
+
+    const hidden = await $.ui.mount({ plugin: 'agent-tree', surface, ...PANE })
+    const shown = surface === 'desktop'
+      ? String((await hidden.find({ type: 'Svg' }))?.props.alt)
+      : (await hidden.findAll({ type: 'Text' })).map(t => t.text).join(' ')
+    expect(shown).toContain(PARENT.description)
+    expect(shown).toContain('Read <the> logs')
+    expect(shown).not.toContain('Finished leaf')
+    await hidden.press({ key: 'done' })
+    await hidden.unmount()
+  }
 })
 
 test('an agent the engine stops listing while running is taken as ended, keeping its counts', () => {

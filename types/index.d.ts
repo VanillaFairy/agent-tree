@@ -21,10 +21,16 @@ export type ToolEvent = {
 }
 
 export type ViewState = {
-  // 1 shows the whole tree; larger values magnify it.
+  // 1 fits the tree's width to the pane (magnifying a narrow tree only so far);
+  // larger magnifies, smaller shrinks.
   zoom: number
-  // Graph coordinates the view centres on; absent, the whole tree is fitted.
-  center?: { x: number; y: number }
+  // Graph coordinates of the window's top-left corner while the tree overflows
+  // it; absent, 0.
+  left?: number
+  top?: number
+  // Where the window was before the last ◀ ▶ ▲ ▼ press: the drawing slides
+  // from there, and the pane clears it once the slide is over.
+  from?: { x: number; y: number }
 }
 
 declare module 'claude-code' {
@@ -34,6 +40,8 @@ declare module 'claude-code' {
       // Keyed by agent id, and 'main' for the main loop; newest last.
       activity: Record<string, ToolEvent[]>
       view: ViewState
+      // Done agents are left out, save those with something under them not done.
+      hideDone: boolean
       now: number
       mainToolCount: number
       // Claude Code's `theme` setting as /config names it (`dark`, `light-daltonized`, `auto`, ...).

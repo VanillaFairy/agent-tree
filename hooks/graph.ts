@@ -5,15 +5,19 @@ export const ROOT = 'main'
 
 const NODE_W = 212
 const NODE_H = 60
-const GAP_X = 26
-const GAP_Y = 52
+const GAP_X = 48
+const GAP_Y = 12
 const PAD = 28
 // Average glyph widths in CSS pixels, for clipping text to a card.
 const GLYPH = { title: 6.3, meta: 5.6, mono: 6.7 } as const
+const MIN_ZOOM = 0.2
+// How long a ◀ ▶ ▲ ▼ press slides the drawing.
+export const SLIDE_MS = 240
 const MAX_ZOOM = 8
-// The fitted view never magnifies past this, so a small tree stays card-sized.
+// Zoom 1 never magnifies past this, so a small tree stays card-sized.
 const MAX_FIT_SCALE = 1.25
 
+// `x`, `y` are the card's top-left corner.
 export type Placed = {
   id: string
   node?: AgentNode
@@ -25,8 +29,6 @@ export type Placed = {
 
 export type Layout = { placed: Placed[]; width: number; height: number }
 
-export type Box = { x: number; y: number; w: number; h: number }
-
 function childrenOf(nodes: Record<string, AgentNode>): Map<string, AgentNode[]> {
   const kids = new Map<string, AgentNode[]>()
   for (const node of Object.values(nodes).sort((a, b) => a.startedAt - b.startedAt)) {
@@ -36,68 +38,115 @@ function childrenOf(nodes: Record<string, AgentNode>): Map<string, AgentNode[]> 
   return kids
 }
 
-// A tidy top-down tree: each subtree takes the width of its widest row and a
-// parent sits centred over its children. `x` is a node's centre, `y` its top.
+// The tree with every done agent left out, unless something under it is not done.
+export function withoutDone(nodes: Record<string, AgentNode>): Record<string, AgentNode> {
+  const kids = childrenOf(nodes)
+  const kept: Record<string, AgentNode> = {}
+  const keep = (node: AgentNode): boolean => {
+    const anyKid = (kids.get(node.id) ?? []).map(keep).some(Boolean)
+    if (!anyKid && node.status === 'completed') return false
+    kept[node.id] = node
+    return true
+  }
+  for (const top of kids.get(ROOT) ?? []) keep(top)
+  return kept
+}
+
+// A sideways tree: one column per depth, siblings stacked in start order, and
+// a parent level with the middle of its children.
 export function layout(nodes: Record<string, AgentNode>): Layout {
   const kids = childrenOf(nodes)
   const span = new Map<string, number>()
   const measure = (id: string): number => {
     const parts = (kids.get(id) ?? []).map(c => measure(c.id))
-    const width = Math.max(NODE_W, parts.reduce((a, b) => a + b, 0) + GAP_X * Math.max(0, parts.length - 1))
-    span.set(id, width)
-    return width
+    const height = Math.max(NODE_H, parts.reduce((a, b) => a + b, 0) + GAP_Y * Math.max(0, parts.length - 1))
+    span.set(id, height)
+    return height
   }
   const total = measure(ROOT)
 
   const placed: Placed[] = []
   let deepest = 0
-  const place = (id: string, node: AgentNode | undefined, parent: string | undefined, left: number, depth: number) => {
-    placed.push({ id, node, parent, x: left + (span.get(id) ?? NODE_W) / 2, y: PAD + depth * (NODE_H + GAP_Y), depth })
+  const place = (id: string, node: AgentNode | undefined, parent: string | undefined, top: number, depth: number): number => {
+    const here: Placed = { id, node, parent, x: PAD + depth * (NODE_W + GAP_X), y: top, depth }
+    placed.push(here)
     deepest = Math.max(deepest, depth)
-    let at = left
+    const ys: number[] = []
+    let at = top
     for (const child of kids.get(id) ?? []) {
-      place(child.id, child, id, at, depth + 1)
-      at += (span.get(child.id) ?? NODE_W) + GAP_X
+      ys.push(place(child.id, child, id, at, depth + 1))
+      at += (span.get(child.id) ?? NODE_H) + GAP_Y
     }
+    if (ys.length > 0) here.y = ((ys[0] ?? top) + (ys[ys.length - 1] ?? top)) / 2
+    return here.y
   }
   place(ROOT, undefined, undefined, PAD, 0)
 
-  return { placed, width: total + PAD * 2, height: PAD * 2 + (deepest + 1) * NODE_H + deepest * GAP_Y }
+  return { placed, width: PAD * 2 + (deepest + 1) * NODE_W + deepest * GAP_X, height: total + PAD * 2 }
 }
 
-// The drawing's size in CSS pixels.
+// The drawing's size in CSS pixels: the room below the toolbar.
 export type Frame = { width: number; height: number }
 
-// The whole tree, widened or heightened to the frame's aspect so it never
-// stretches; zoom 1 shows exactly this.
-function fitted(lay: Layout, frame: Frame): Box {
-  const aspect = frame.height / frame.width
-  const w = Math.max(lay.width, lay.height / aspect, frame.width / MAX_FIT_SCALE)
-  const h = w * aspect
-  return { x: (lay.width - w) / 2, y: (lay.height - h) / 2, w, h }
+export type Axis = 'x' | 'y'
+
+const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v))
+
+// Pixels per graph unit at zoom 1: the tree's width fills the drawing.
+function baseScale(lay: Layout, width: number): number {
+  return Math.min(width / lay.width, MAX_FIT_SCALE)
 }
 
-export function viewport(lay: Layout, view: ViewState, frame: Frame): Box {
-  const fit = fitted(lay, frame)
-  const w = fit.w / view.zoom
-  const h = fit.h / view.zoom
-  const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v))
-  const cx = clamp(view.center?.x ?? fit.x + fit.w / 2, fit.x + w / 2, fit.x + fit.w - w / 2)
-  const cy = clamp(view.center?.y ?? fit.y + fit.h / 2, fit.y + h / 2, fit.y + fit.h - h / 2)
-  return { x: cx - w / 2, y: cy - h / 2, w, h }
+// The part of the tree the drawing shows, in graph units, and its scale.
+export type Window = { x: number; y: number; w: number; h: number; scale: number }
+
+// Along one axis: a tree that fits starts at its edge, a longer one keeps the
+// window inside it.
+const edge = (length: number, room: number, at: number | undefined) => (room >= length ? 0 : clamp(at ?? 0, 0, length - room))
+
+export function viewport(lay: Layout, view: ViewState, frame: Frame): Window {
+  const scale = baseScale(lay, frame.width) * clamp(view.zoom, MIN_ZOOM, MAX_ZOOM)
+  const w = frame.width / scale
+  const h = frame.height / scale
+  return { x: edge(lay.width, w, view.left), y: edge(lay.height, h, view.top), w, h, scale }
 }
 
-// Zooms by `factor` keeping the graph point under the pointer where it is.
-// `fx`, `fy` are the pointer's place across the drawing, 0 to 1.
-export function zoomAt(lay: Layout, view: ViewState, frame: Frame, fx: number, fy: number, factor: number): ViewState {
-  const zoom = Math.min(MAX_ZOOM, Math.max(1, view.zoom * factor))
-  if (zoom === 1) return { zoom }
-  const vp = viewport(lay, view, frame)
-  const px = vp.x + fx * vp.w
-  const py = vp.y + fy * vp.h
-  const w = vp.w * (view.zoom / zoom)
-  const h = vp.h * (view.zoom / zoom)
-  return { zoom, center: { x: px - fx * w + w / 2, y: py - fy * h + h / 2 } }
+// The zoom at which the whole tree fits the drawing.
+export function fitZoom(lay: Layout, frame: Frame): number {
+  return clamp(frame.height / lay.height / baseScale(lay, frame.width), MIN_ZOOM, 1)
+}
+
+// Zooms by `factor`, keeping the middle of the window where it is.
+export function zoomBy(lay: Layout, view: ViewState, frame: Frame, factor: number): ViewState {
+  const from = viewport(lay, view, frame)
+  const zoom = clamp(view.zoom * factor, MIN_ZOOM, MAX_ZOOM)
+  const to = viewport(lay, { zoom }, frame)
+  return { zoom, left: from.x + from.w / 2 - to.w / 2, top: from.y + from.h / 2 - to.h / 2 }
+}
+
+function span(lay: Layout, win: Window, axis: Axis): { at: number; room: number; length: number } {
+  return axis === 'x' ? { at: win.x, room: win.w, length: lay.width } : { at: win.y, room: win.h, length: lay.height }
+}
+
+// Moves the window one step along `axis`, `direction` -1 or 1. The distance
+// it can travel is cut into equal steps of about `fraction` of the window,
+// so every press moves as far as the last and the last lands on the edge.
+// The move slides from where the window was.
+export function panBy(lay: Layout, view: ViewState, frame: Frame, axis: Axis, direction: number, fraction: number): ViewState {
+  const from = viewport(lay, view, frame)
+  const { at, room, length } = span(lay, from, axis)
+  const range = length - room
+  if (range <= 0) return view
+  const step = range / Math.ceil(range / (fraction * room))
+  const next = (direction > 0 ? Math.floor(at / step + 1e-6) + 1 : Math.ceil(at / step - 1e-6) - 1) * step
+  const to = viewport(lay, axis === 'x' ? { ...view, left: next } : { ...view, top: next }, frame)
+  return { zoom: view.zoom, left: to.x, top: to.y, from: { x: from.x, y: from.y } }
+}
+
+// Whether the window can still move along `axis` toward `direction`, -1 or 1.
+export function canPan(lay: Layout, view: ViewState, frame: Frame, axis: Axis, direction: number): boolean {
+  const { at, room, length } = span(lay, viewport(lay, view, frame), axis)
+  return direction < 0 ? at > 0.5 : at + room < length - 0.5
 }
 
 export function elapsed(ms: number): string {
@@ -165,30 +214,30 @@ text{font-family:system-ui,-apple-system,"Segoe UI",sans-serif;white-space:pre}
 .dot.running{fill:var(--live)}.dot.completed{fill:var(--ok)}.dot.failed{fill:var(--bad)}.dot.killed{fill:var(--off)}
 .word.completed{fill:var(--ok)}.word.failed{fill:var(--bad)}.word.killed{fill:var(--off)}
 .word{font-size:11px}
-.root{fill:var(--ink);font-size:13.5px;font-weight:650;text-anchor:middle}
-.root-meta{fill:var(--muted);font-size:11px;text-anchor:middle}
-.root-doing{fill:var(--live);font:11px ui-monospace,"Cascadia Code",Consolas,monospace;text-anchor:middle}
+.root{fill:var(--ink);font-size:13.5px;font-weight:650;text-anchor:end}
+.root-meta{fill:var(--muted);font-size:11px;text-anchor:end}
+.root-doing{fill:var(--live);font:11px ui-monospace,"Cascadia Code",Consolas,monospace;text-anchor:end}
 .wire{fill:none;stroke:var(--line);stroke-width:1.2}
 .pulse{fill:none;stroke:var(--live);stroke-width:2;stroke-linecap:round;stroke-dasharray:6 90;animation:flow 1.6s linear infinite}
-.hint{fill:var(--muted);font-size:12px;text-anchor:middle}
+.hint{fill:var(--muted);font-size:12px}
 @keyframes flow{from{stroke-dashoffset:96}to{stroke-dashoffset:0}}
 @media (prefers-reduced-motion: reduce){.pulse{animation:none;stroke-dasharray:none;opacity:.6}}`
 
-// Down from the parent, across, and down into the child, with soft corners.
+// Right out of the parent, down or up, and right into the child, with soft corners.
 function wire(from: Placed, to: Placed): string {
-  const x0 = from.x
-  const y0 = from.y + NODE_H
+  const x0 = from.x + NODE_W
+  const y0 = from.y + NODE_H / 2
   const x1 = to.x
-  const y1 = to.y
-  const mid = y0 + (y1 - y0) / 2
-  if (Math.abs(x1 - x0) < 1) return `M${x0} ${y0} V${y1}`
-  const r = Math.min(8, Math.abs(x1 - x0) / 2, (y1 - y0) / 4)
-  const dir = x1 > x0 ? 1 : -1
-  return `M${x0} ${y0} V${mid - r} Q${x0} ${mid} ${x0 + dir * r} ${mid} H${x1 - dir * r} Q${x1} ${mid} ${x1} ${mid + r} V${y1}`
+  const y1 = to.y + NODE_H / 2
+  const mid = x0 + (x1 - x0) / 2
+  if (Math.abs(y1 - y0) < 1) return `M${x0} ${y0} H${x1}`
+  const r = Math.min(8, Math.abs(y1 - y0) / 2, (x1 - x0) / 4)
+  const dir = y1 > y0 ? 1 : -1
+  return `M${x0} ${y0} H${mid - r} Q${mid} ${y0} ${mid} ${y0 + dir * r} V${y1 - dir * r} Q${mid} ${y1} ${mid + r} ${y1} H${x1}`
 }
 
 function agentCard(p: Placed, n: AgentNode, events: readonly ToolEvent[] | undefined, now: number, focus: boolean): string {
-  const x = p.x - NODE_W / 2
+  const x = p.x
   const y = p.y
   const tx = x + 26
   const room = NODE_W - 36
@@ -205,15 +254,17 @@ function agentCard(p: Placed, n: AgentNode, events: readonly ToolEvent[] | undef
 <text class="meta" x="${tx}" y="${y + 36}">${esc(clip(meta, room))}</text>${third}</g>`
 }
 
+// Right-aligned against its column's edge, where the wires leave it.
 function rootCard(p: Placed, project: string, events: readonly ToolEvent[] | undefined, mainTools: number, agents: number, running: number): string {
   const y = p.y
-  const room = NODE_W + 40
+  const x = p.x + NODE_W - 10
+  const room = NODE_W + PAD - 14
   const doing = current(events)
   const meta = agents === 0 ? `this session   ${mainTools} tools` : `this session   ${agents} agents   ${running} running`
-  const third = doing ? `<text class="root-doing" x="${p.x}" y="${y + 50}">${esc(clip(`${doing.tool} ${doing.arg}`, room, GLYPH.mono))}</text>` : ''
+  const third = doing ? `<text class="root-doing" x="${x}" y="${y + 50}">${esc(clip(`${doing.tool} ${doing.arg}`, room, GLYPH.mono))}</text>` : ''
   return `<g>
-<text class="root" x="${p.x}" y="${y + 20}">${esc(clip(project || 'Session', room, GLYPH.title))}</text>
-<text class="root-meta" x="${p.x}" y="${y + 36}">${esc(meta)}</text>${third}</g>`
+<text class="root" x="${x}" y="${y + 20}">${esc(clip(project || 'Session', room, GLYPH.title))}</text>
+<text class="root-meta" x="${x}" y="${y + 36}">${esc(clip(meta, room))}</text>${third}</g>`
 }
 
 export type GraphInput = {
@@ -226,14 +277,12 @@ export type GraphInput = {
   project: string
   // The agent whose transcript is on screen beside the pane, if any.
   focus?: string
-  // The drawing's size in CSS pixels; the tree is fitted to its aspect.
-  width: number
-  height: number
+  frame: Frame
 }
 
 export function graphSvg(g: GraphInput): { source: string; alt: string } {
   const lay = layout(g.nodes)
-  const vp = viewport(lay, g.view, g)
+  const vp = viewport(lay, g.view, g.frame)
   const where = new Map(lay.placed.map(p => [p.id, p]))
   const agents = Object.values(g.nodes)
   const running = agents.filter(n => n.status === 'running').length
@@ -253,11 +302,18 @@ export function graphSvg(g: GraphInput): { source: string; alt: string } {
   )
   const hint =
     agents.length === 0
-      ? `<text class="hint" x="${lay.width / 2}" y="${PAD + NODE_H + 30}">Subagents show up here as they start</text>`
+      ? `<text class="hint" x="${PAD}" y="${PAD + NODE_H + 30}">Subagents show up here as they start</text>`
       : ''
 
-  const box = [vp.x, vp.y, vp.w, vp.h].map(v => v.toFixed(1)).join(' ')
-  const source = `<svg xmlns="http://www.w3.org/2000/svg" width="${g.width}" height="${g.height}" viewBox="${box}"><style>${themeCss(g.theme)}${CSS}</style>${wires.join('')}${cards.join('')}${hint}</svg>`
+  const box = (x: number, y: number) => [x, y, vp.w, vp.h].map(v => v.toFixed(1)).join(' ')
+  const from = g.view.from
+  // The drawing animates itself: each redraw replaces it whole, so a slide
+  // between two views has to live inside the new one.
+  const slide =
+    from !== undefined && Math.abs(from.x - vp.x) + Math.abs(from.y - vp.y) > 0.5
+      ? `<animate attributeName="viewBox" from="${box(from.x, from.y)}" to="${box(vp.x, vp.y)}" dur="${SLIDE_MS}ms" fill="freeze" calcMode="spline" keyTimes="0;1" keySplines=".3 0 .2 1"/>`
+      : ''
+  const source = `<svg xmlns="http://www.w3.org/2000/svg" width="${g.frame.width}" height="${g.frame.height}" viewBox="${box(vp.x, vp.y)}">${slide}<style>${themeCss(g.theme)}${CSS}</style>${wires.join('')}${cards.join('')}${hint}</svg>`
   const alt = lay.placed
     .map(p => `${'  '.repeat(p.depth)}${p.node ? `${p.node.description} (${p.node.type}, ${STATUS_WORD[p.node.status]})` : g.project || 'Session'}`)
     .join('\n')

@@ -1,31 +1,54 @@
 import { atom, read, update } from 'claude-code'
-import type { AgentInfo, EngineInterface, Register } from 'claude-code'
+import type { AgentInfo, EngineInterface, Register, UiPressArgument } from 'claude-code'
 
 import type { AgentNode, AgentStatus, ToolEvent, ViewState } from '../types'
-import { argSummary, current, finished, started } from './activity'
-import { ROOT, STATUS_WORD, elapsed, graphSvg, layout, zoomAt } from './graph'
+import { argSummary, finished, started } from './activity'
+import { ROOT, SLIDE_MS, STATUS_WORD, canPan, elapsed, fitZoom, graphSvg, layout, panBy, viewport, withoutDone, zoomBy } from './graph'
+import type { Axis, Layout, Window } from './graph'
 
 const PANE = 'agent-tree'
 const OPEN = { id: PANE, title: 'Agents' }
-// The desktop draws a pane in cells of about this many CSS pixels; the drawing
-// is sized from the cells the pane reports so it fills the body without scrolling.
+// The desktop draws a pane in cells of about this many CSS pixels. The drawing
+// fills the body below the toolbar and never more, so the pane never scrolls:
+// a pane has no part that stays put while the rest scrolls, so the tree pans
+// inside the drawing instead and the toolbar stays where it is.
 const CELL_W = 8
-const CELL_H = 18
-const WHEEL_STEP = 1.2
+export const CELL_H = 18
+// Rows the toolbar takes, and a spare row so a cell estimate a little short
+// doesn't tip the body into scrolling.
+export const TOOLBAR_ROWS = 2
+const SPARE_ROWS = 1
+const ZOOM_STEP = 1.25
+// Of the window's width or height, about how far one ◀ ▶ ▲ ▼ press moves it.
+const PAN_STEP = 0.5
 
-const FIT: ViewState = { zoom: 1 }
+const WIDTH: ViewState = { zoom: 1 }
+
+// The window's corner when the current drag began, and the window as last
+// drawn, for turning cells dragged into graph units.
+let dragStart: { press: number; left: number; top: number } | undefined
+let drawnWindow: Window = { x: 0, y: 0, w: 1, h: 1, scale: 1 }
+
+function dragOf(data: unknown): { press: number; dx: number; dy: number } | undefined {
+  if (typeof data !== 'object' || data === null) return undefined
+  const { press, dx, dy } = data as Record<string, unknown>
+  return typeof press === 'number' && typeof dx === 'number' && typeof dy === 'number' ? { press, dx, dy } : undefined
+}
 
 const nodes = atom({ plugin: 'agent-tree', key: 'nodes' } as const, {})
 const activity = atom({ plugin: 'agent-tree', key: 'activity' } as const, {})
-const view = atom({ plugin: 'agent-tree', key: 'view' } as const, FIT)
+const view = atom({ plugin: 'agent-tree', key: 'view' } as const, WIDTH)
+const hideDone = atom({ plugin: 'agent-tree', key: 'hideDone' } as const, false)
 const now = atom({ plugin: 'agent-tree', key: 'now' } as const, 0)
 const mainToolCount = atom({ plugin: 'agent-tree', key: 'mainToolCount' } as const, 0)
 const theme = atom({ plugin: 'agent-tree', key: 'theme' } as const, 'auto')
 const project = atom({ plugin: 'agent-tree', key: 'project' } as const, '')
 
-// Where the pane was last drawn, for mapping a wheel tick's cell onto the
-// drawing. A scroll only ever follows a draw, so these are set when read.
-const drawn = { surface: '', columns: 1, rows: 1 }
+async function moveView($: EngineInterface, move: (lay: Layout, v: ViewState) => ViewState): Promise<void> {
+  const [all, hide] = await Promise.all([read($, nodes), read($, hideDone)])
+  const lay = layout(hide ? withoutDone(all) : all)
+  await update($, view, v => move(lay, v))
+}
 
 function statusOf(raw: string): AgentStatus {
   if (raw === 'running' || raw === 'pending') return 'running'
@@ -62,19 +85,16 @@ export function merge(
   return next
 }
 
+// Writes only what changed, since every write redraws the pane.
 async function refresh($: EngineInterface): Promise<void> {
-  const [list, at] = await Promise.all([$.agent.list(), $.clock.now()])
-  await update($, nodes, prev => merge(prev, list, at))
-  await update($, now, () => at)
+  const [list, at, prev] = await Promise.all([$.agent.list(), $.clock.now(), read($, nodes)])
+  const next = merge(prev, list, at)
+  if (JSON.stringify(next) !== JSON.stringify(prev)) await update($, nodes, () => next)
+  if (Object.values(next).some(n => n.status === 'running')) await update($, now, () => at)
 }
 
 async function tick($: EngineInterface): Promise<void> {
-  const [all, acts] = await Promise.all([read($, nodes), read($, activity)])
-  if (Object.values(all).some(n => n.status === 'running')) return refresh($)
-  if (current(acts[ROOT])) {
-    const at = await $.clock.now()
-    await update($, now, () => at)
-  }
+  if (Object.values(await read($, nodes)).some(n => n.status === 'running')) await refresh($)
 }
 
 async function setTheme($: EngineInterface, value: unknown): Promise<void> {
@@ -90,8 +110,7 @@ async function syncTheme($: EngineInterface): Promise<void> {
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     await $.command.register({ name: 'agent-tree', description: 'Show this session’s subagent tree' })
-    // Ticks only while something runs, so elapsed times count up; a missed
-    // tick is redrawn by the next one.
+    // Redraws only while an agent runs, so its elapsed time counts up.
     $.clock.every(1000, () => {
       tick($).catch(() => undefined)
     })
@@ -128,7 +147,7 @@ export const register: Register = on => {
     if (e.reason === 'clear') {
       await update($, nodes, () => ({}))
       await update($, activity, () => ({}))
-      await update($, view, () => FIT)
+      await update($, view, () => WIDTH)
       await update($, mainToolCount, () => 0)
     }
 
@@ -179,23 +198,24 @@ export const register: Register = on => {
     }
   })
 
-  // The wheel zooms the drawing around the pointer instead of scrolling the
-  // pane; zooming all the way out fits the whole tree again.
-  on('ui.scroll', { requestId: PANE }, async ($, e, next) => {
-    if (drawn.surface === 'terminal' || !e.pointer || e.by === 0) return next(e)
-    const fx = Math.min(1, Math.max(0, e.pointer.column / drawn.columns))
-    const fy = Math.min(1, Math.max(0, e.pointer.row / drawn.rows))
-    const factor = WHEEL_STEP ** -e.by
-    const all = await read($, nodes)
-    const frame = { width: drawn.columns * CELL_W, height: drawn.rows * CELL_H }
-    await update($, view, v => zoomAt(layout(all), v, frame, fx, fy, factor))
+  // Dragging the drawing pans the window, the tree following the pointer.
+  on('ui.message', { requestId: PANE, element: 'drag' }, async ($, e) => {
+    const drag = dragOf(e.data)
+    if (!drag) return {}
+    if (dragStart?.press !== drag.press) dragStart = { press: drag.press, left: drawnWindow.x, top: drawnWindow.y }
+    const left = dragStart.left - (drag.dx * CELL_W) / drawnWindow.scale
+    const top = dragStart.top - (drag.dy * CELL_H) / drawnWindow.scale
+    if (Math.abs(left - drawnWindow.x) + Math.abs(top - drawnWindow.y) > 0.5) {
+      await update($, view, v => ({ zoom: v.zoom, left, top }))
+    }
 
     return {}
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
-    const [all, acts, v, at, mainTools, look, name] = await Promise.all([
+    const [all, hide, acts, v, at, mainTools, look, name] = await Promise.all([
       read($, nodes),
+      read($, hideDone),
       read($, activity),
       read($, view),
       read($, now),
@@ -203,16 +223,52 @@ export const register: Register = on => {
       read($, theme),
       read($, project),
     ])
-    const columns = Math.max(20, e.props.bodyColumns)
-    const rows = Math.max(8, e.props.scroll.bodyRows - 1)
-    Object.assign(drawn, { surface: e.surface, columns, rows })
+    const drawingRows = Math.max(4, e.props.scroll.bodyRows - TOOLBAR_ROWS - SPARE_ROWS)
+    const frame = {
+      width: Math.max(20, e.props.bodyColumns) * CELL_W,
+      height: drawingRows * CELL_H,
+    }
+    const shown = hide ? withoutDone(all) : all
+    const doneCount = Object.keys(all).length - Object.keys(shown).length
+    // The desktop ignores a click on a Button while that Button's last press
+    // is still being answered, so a press only starts its work and returns.
+    const press = (work: () => Promise<unknown>) => (_: UiPressArgument) => {
+      work().catch(err => {
+        $.ui.toast(`agent-tree: ${String(err)}`)
+      })
+    }
+    const zoom = (factor: number) => press(() => moveView($, (lay, view) => zoomBy(lay, view, frame, factor)))
+    // Once the slide is over the drawing is redrawn still, so a later redraw
+    // (a tick, a new agent) doesn't replay it; a newer press keeps its own.
+    const pan = (axis: Axis, direction: number) =>
+      press(async () => {
+        await moveView($, (lay, view) => panBy(lay, view, frame, axis, direction, PAN_STEP))
+        const slid = await read($, view)
+        $.clock
+          .sleep(SLIDE_MS)
+          .then(() =>
+            update($, view, v =>
+              v.from !== undefined && v.left === slid.left && v.top === slid.top ? { zoom: v.zoom, left: v.left, top: v.top } : v,
+            ),
+          )
+          .catch(() => undefined)
+      })
+    const fit = press(() => moveView($, lay => ({ zoom: fitZoom(lay, frame) })))
+    const toggleDone = press(async () => {
+      await update($, hideDone, h => !h)
+      await update($, view, () => WIDTH)
+    })
+    const doneLabel = hide ? `Show done (${doneCount})` : 'Hide done'
 
     if (e.surface === 'terminal') {
-      const { Box, Text } = $.ui.resolve(e)
+      const { Box, Text, Button } = $.ui.resolve(e)
       const color: Record<AgentStatus, string> = { running: 'permission', completed: 'success', failed: 'error', killed: 'inactive' }
       return (
         <Box flexDirection="column">
-          {layout(all).placed.map(p =>
+          <Box>
+            <Button key="done" hotkey="h" onPress={toggleDone}>{doneLabel}</Button>
+          </Box>
+          {layout(shown).placed.map(p =>
             p.node ? (
               <Text wrap="truncate-end">
                 {'  '.repeat(p.depth)}
@@ -230,9 +286,12 @@ export const register: Register = on => {
       )
     }
 
-    const { Svg } = $.ui.resolve(e)
+    const elements = $.ui.resolve(e)
+    const { Box, Button, Svg } = elements
+    // Only the desktop draws a Client, so only there does the drawing drag.
+    const Client = 'Client' in elements ? elements.Client : undefined
     const graph = graphSvg({
-      nodes: all,
+      nodes: shown,
       activity: acts,
       view: v,
       now: at,
@@ -240,10 +299,43 @@ export const register: Register = on => {
       theme: look,
       project: name,
       focus: e.props.view.agentId,
-      width: columns * CELL_W,
-      height: rows * CELL_H,
+      frame,
     })
+    const lay = layout(shown)
+    const win = viewport(lay, v, frame)
+    drawnWindow = win
+    const arrow = (axis: Axis, direction: number, key: string, glyph: string) => (
+      <Button key={key} dimColor={!canPan(lay, v, frame, axis, direction)} onPress={pan(axis, direction)}>
+        {glyph}
+      </Button>
+    )
 
-    return <Svg source={graph.source} alt={graph.alt} />
+    return (
+      <Box flexDirection="column">
+        <Box key="toolbar" height={TOOLBAR_ROWS} flexDirection="row" alignItems="center" gap={1}>
+          <Button key="zoom-out" onPress={zoom(1 / ZOOM_STEP)}>−</Button>
+          <Button key="zoom-in" onPress={zoom(ZOOM_STEP)}>+</Button>
+          <Button key="fit" hotkey="f" onPress={fit}>Fit</Button>
+          {win.w < lay.width && arrow('x', -1, 'pan-left', '◀')}
+          {win.w < lay.width && arrow('x', 1, 'pan-right', '▶')}
+          {win.h < lay.height && arrow('y', -1, 'pan-up', '▲')}
+          {win.h < lay.height && arrow('y', 1, 'pan-down', '▼')}
+          <Button key="done" hotkey="h" onPress={toggleDone}>{doneLabel}</Button>
+        </Box>
+        {/* Rows are what the pane measures in; the drawing's pixels are only
+            an estimate of them, so the box clips what a short estimate lets
+            spill over instead of the pane scrolling it. */}
+        <Box position="relative" height={drawingRows} overflow="hidden">
+          <Svg source={graph.source} alt={graph.alt} />
+          {Client && (
+            // The desktop sizes a Client's region by what its module draws,
+            // so the module is told the drawing's size in cells.
+            <Box position="absolute" top={0} left={0}>
+              <Client key="drag" module="./drag.ts" props={{ columns: Math.floor(frame.width / CELL_W), rows: drawingRows }} />
+            </Box>
+          )}
+        </Box>
+      </Box>
+    )
   })
 }
