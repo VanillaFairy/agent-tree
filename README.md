@@ -40,7 +40,7 @@ The pane opens on its own when a session starts, and each session shows its own 
 
 (The screenshot uses made-up sample data.)
 
-The tree reads left to right. Your session sits in the first column, named after its project folder, the agents it spawned in the next, their own agents in the one after that, and so on. The dot shows where an agent is at: blue while it runs, green when it's done, red if it failed, grey if it was stopped. A running agent's card also shows the tool it's using right now, and a small pulse runs along the line into it.
+The tree reads left to right. Your session sits in the first column, named after its project folder, the agents it spawned in the next, their own agents in the one after that, and so on. The dot shows where an agent is at: blue while it runs, green when it's done, red if it failed, grey if it was stopped. A running agent's card also shows the tool it's using right now, and a small pulse runs along the line into it. The top right of every card shows how long its agent has run, counting up by the second while it runs; in the terminal the run time comes right after the dot.
 
 The toolbar above the tree stays put:
 
