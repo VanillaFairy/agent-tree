@@ -3,7 +3,7 @@ import type { TestBody } from 'claude-code/testing'
 import type { AgentInfo } from 'claude-code'
 
 import type { ViewState } from '../types'
-import { SLIDE_MS, canPan, elapsed, layout, panBy, viewport } from './graph'
+import { SLIDE_MS, canPan, elapsed, layout, panBy, twoLines, viewport } from './graph'
 import { CELL_H, TOOLBAR_ROWS, merge } from './register'
 
 const PANE = {
@@ -325,4 +325,17 @@ test('an agent type too long for one line goes on to a second, the tool count wi
   expect(lines.length).toBe(2)
   expect(lines.join(' ')).toContain(type)
   expect(lines.join(' ')).toContain('0 tools')
+})
+
+test('neither line of a two-line type runs past its room, wherever the break falls', () => {
+  const room = 10
+  for (const mark of [' ', ':', '-', '_']) {
+    for (let at = room - 2; at <= room + 1; at++) {
+      const text = `${'a'.repeat(at)}${mark}${'b'.repeat(room)}`
+      const lines = twoLines(text, room, 1)
+      expect(lines.every(line => line.length <= room)).toBe(true)
+    }
+  }
+  const tabbed = twoLines('agentics:\tscout\n  3 tools', room, 1)
+  expect(tabbed.join(' ')).not.toMatch(/[\t\n]/)
 })

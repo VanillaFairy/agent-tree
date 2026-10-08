@@ -241,13 +241,16 @@ function wire(from: Placed, to: Placed): string {
 
 // Splits `text` over two lines of `px`, breaking after a space, `:`, `-` or
 // `_` where it can; only the second line is ever clipped.
-function twoLines(text: string, px: number, glyph: number = GLYPH.meta): [string, string] {
+export function twoLines(text: string, px: number, glyph: number = GLYPH.meta): [string, string] {
   const room = Math.max(4, Math.floor(px / glyph))
-  if (text.length <= room) return [text, '']
-  const head = text.slice(0, room + 1)
-  const cut = Math.max(head.lastIndexOf(' '), head.lastIndexOf(':') + 1, head.lastIndexOf('-') + 1, head.lastIndexOf('_') + 1)
+  const flat = text.replace(/[\r\n\t]+/g, ' ').trim()
+  if (flat.length <= room) return [flat, '']
+  // A space may sit just past the room, since it is trimmed away; a break
+  // after `:`, `-` or `_` keeps its mark on the first line, so must sit inside.
+  const marks = [':', '-', '_'].map(mark => flat.lastIndexOf(mark, room - 1) + 1)
+  const cut = Math.max(flat.lastIndexOf(' ', room), ...marks)
   const at = cut > room / 3 ? cut : room
-  return [text.slice(0, at).trimEnd(), clip(text.slice(at).trimStart(), px, glyph)]
+  return [flat.slice(0, at).trimEnd(), clip(flat.slice(at).trimStart(), px, glyph)]
 }
 
 function agentCard(p: Placed, n: AgentNode, events: readonly ToolEvent[] | undefined, now: number, focus: boolean): string {
