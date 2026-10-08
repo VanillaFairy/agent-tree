@@ -9,7 +9,7 @@ const GAP_X = 48
 const GAP_Y = 12
 const PAD = 28
 // Average glyph widths in CSS pixels, for clipping text to a card.
-const GLYPH = { title: 6.3, meta: 5.6, mono: 6.7 } as const
+const GLYPH = { title: 6.3, meta: 5.6, mono: 6.7, time: 6.6 } as const
 const MIN_ZOOM = 0.2
 // How long a ◀ ▶ ▲ ▼ press slides the drawing.
 export const SLIDE_MS = 240
@@ -216,6 +216,7 @@ text{font-family:system-ui,-apple-system,"Segoe UI",sans-serif;white-space:pre}
 .dot.running{fill:var(--live)}.dot.completed{fill:var(--ok)}.dot.failed{fill:var(--bad)}.dot.killed{fill:var(--off)}
 .word.completed{fill:var(--ok)}.word.failed{fill:var(--bad)}.word.killed{fill:var(--off)}
 .word{font-size:11px}
+.time{fill:var(--muted);font-size:11px;font-variant-numeric:tabular-nums;text-anchor:end}
 .root{fill:var(--ink);font-size:13.5px;font-weight:650;text-anchor:end}
 .root-meta{fill:var(--muted);font-size:11px;text-anchor:end}
 .root-doing{fill:var(--live);font:11px ui-monospace,"Cascadia Code",Consolas,monospace;text-anchor:end}
@@ -244,7 +245,11 @@ function agentCard(p: Placed, n: AgentNode, events: readonly ToolEvent[] | undef
   const tx = x + 26
   const room = NODE_W - 36
   const doing = n.status === 'running' ? current(events) : undefined
-  const meta = `${n.type}   ${n.toolCount} tools   ${elapsed((n.endedAt ?? now) - n.startedAt)}`
+  const meta = `${n.type}   ${n.toolCount} tools`
+  // The run time sits on the dot's row at the card's right edge, and the
+  // title gives way to it, never the other way round.
+  const time = elapsed((n.endedAt ?? now) - n.startedAt)
+  const timeRoom = time.length * GLYPH.time + 8
   const third =
     n.status === 'running'
       ? `<text class="doing" x="${tx}" y="${y + 50}">${esc(clip(doing ? `${doing.tool} ${doing.arg}` : 'thinking…', room, GLYPH.mono))}</text>`
@@ -252,7 +257,8 @@ function agentCard(p: Placed, n: AgentNode, events: readonly ToolEvent[] | undef
   return `<g class="${focus ? 'focus' : ''}">
 <rect class="card" x="${x}" y="${y}" width="${NODE_W}" height="${NODE_H}" rx="10"/>
 <circle class="dot ${n.status}" cx="${x + 14}" cy="${y + 17}" r="3.5"/>
-<text class="title" x="${tx}" y="${y + 21}">${esc(clip(n.description, room, GLYPH.title))}</text>
+<text class="title" x="${tx}" y="${y + 21}">${esc(clip(n.description, room - timeRoom, GLYPH.title))}</text>
+<text class="time" x="${x + NODE_W - 10}" y="${y + 21}">${time}</text>
 <text class="meta" x="${tx}" y="${y + 36}">${esc(clip(meta, room))}</text>${third}</g>`
 }
 

@@ -272,10 +272,10 @@ export const register: Register = on => {
             p.node ? (
               <Text wrap="truncate-end">
                 {'  '.repeat(p.depth)}
-                <Text color={color[p.node.status]}>●</Text> {p.node.description}{' '}
-                <Text dimColor>
-                  {p.node.type} {elapsed((p.node.endedAt ?? at) - p.node.startedAt)} {STATUS_WORD[p.node.status]}
-                </Text>
+                {/* The run time comes before anything long, so a narrow pane
+                    truncates the description instead. */}
+                <Text color={color[p.node.status]}>●</Text> {elapsed((p.node.endedAt ?? at) - p.node.startedAt)}{' '}
+                {p.node.description} <Text dimColor>{p.node.type} {STATUS_WORD[p.node.status]}</Text>
               </Text>
             ) : (
               <Text bold>{name || 'Session'}</Text>
