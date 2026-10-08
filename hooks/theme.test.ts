@@ -23,6 +23,6 @@ test('the colour-blind themes stop telling done from failed by green against red
     const dalton = themeCss(`${base}-daltonized`)
     expect(token(dalton, 'ok')).not.toBe(token(plain, 'ok'))
     expect(token(dalton, 'bad')).not.toBe(token(plain, 'bad'))
-    expect(token(dalton, 'run')).not.toBe(token(dalton, 'ok'))
+    expect(token(dalton, 'live')).not.toBe(token(dalton, 'ok'))
   }
 })
