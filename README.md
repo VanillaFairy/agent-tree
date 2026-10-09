@@ -50,6 +50,8 @@ The toolbar above the tree stays put:
 
 On the desktop you can also drag the tree around. Drag with the middle or right mouse button and the tree follows the pointer. With the left button it works too, but the desktop holds the pane still while that button is down, so the tree jumps to where you let go.
 
+Wherever an agent's lines leave for the agents it spawned, there's a small round mark. Click its **−** to fold those agents away and **+** to bring them back. A folded mark shows how many agents it hides, and takes the running colour while any of them is still running. Folding only hides them: they keep running and the tree keeps tracking them. Folds are desktop-only and last until the session is cleared; the terminal always shows the whole tree.
+
 The mouse wheel doesn't zoom or scroll the tree. The desktop only tells a plugin about the wheel when the pane itself scrolls, and this pane never does, so the toolbar can stay in place.
 
 If you open a subagent's transcript, its card gets an outline so you can find it in the tree.
