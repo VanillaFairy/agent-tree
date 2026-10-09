@@ -50,6 +50,8 @@ declare module 'claude-code' {
       project: string
       // The person closed the pane; only /agent-tree brings it back.
       hidden: boolean
+      // Nodes whose agents the desktop drawing leaves folded away.
+      collapsed: string[]
     }
   }
 }

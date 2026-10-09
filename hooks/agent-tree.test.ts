@@ -237,6 +237,39 @@ test('dragging the drawing with any button moves the view by as much as the poin
   }
 })
 
+test('clicking the mark where an agent’s wires leave folds its agents away, running or not, and clicking again brings them back', async ($, on) => {
+  mock.clock(on, { now: 1000 })
+  on('agent.list', async () => ({ value: [PARENT, CHILD] }))
+  on('classic.SubagentStart', async () => ({}))
+  await $.classic.SubagentStart({ agent_id: 'a2', agent_type: 'scout' })
+
+  const ui = await $.ui.mount({ plugin: 'agent-tree', surface: 'desktop', ...PANE })
+  const svg = async () => (await ui.find({ type: 'Svg' }))?.props
+  // The fold mark furthest right is the one on the deepest parent, a1.
+  const source = String((await svg())?.source)
+  const marks = [...source.matchAll(/<g class="fold[^"]*"><circle cx="([\d.]+)" cy="([\d.]+)"/g)].map(m => ({ x: Number(m[1]), y: Number(m[2]) }))
+  const mark = marks.sort((a, b) => b.x - a.x)[0]
+  if (!mark) throw new Error('no fold mark drawn')
+  const win = drawnOf(source)
+  const scale = Number(source.match(/ width="([\d.]+)"/)?.[1]) / win.w
+  const cellW = Number(source.match(/ width="([\d.]+)"/)?.[1]) / PANE.props.bodyColumns
+  const cell = { x: Math.floor(((mark.x - win.x) * scale) / cellW), y: Math.floor(((mark.y - win.y) * scale) / CELL_H) }
+  const click = async () => {
+    await ui.pointer({ type: 'down', button: 'left', ...cell, in: 'drag' })
+    await ui.pointer({ type: 'up', button: 'left', ...cell, in: 'drag' })
+  }
+
+  await click()
+  const folded = String((await svg())?.alt)
+  expect(folded).toContain(`${PARENT.description} (Explore, running) [1 folded, running]`)
+  expect(folded).not.toContain(CHILD.description)
+
+  await click()
+  expect(String((await svg())?.alt)).toContain(`
+    ${CHILD.description} (scout, running)`)
+  await ui.unmount()
+})
+
 test('hiding done agents keeps a done agent with work still running under it', async ($, on) => {
   mock.clock(on, { now: 1000 })
   const doneParent = { ...PARENT, status: 'completed' }

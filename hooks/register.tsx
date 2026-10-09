@@ -3,7 +3,7 @@ import type { AgentInfo, EngineInterface, Register, Timer, UiPressArgument } fro
 
 import type { AgentNode, AgentStatus, ToolEvent, ViewState } from '../types'
 import { argSummary, finished, started } from './activity'
-import { ROOT, SLIDE_MS, STATUS_WORD, canPan, elapsed, fitZoom, graphSvg, layout, panBy, viewport, withoutDone, zoomBy } from './graph'
+import { ROOT, SLIDE_MS, STATUS_WORD, canPan, elapsed, fitZoom, foldAt, graphSvg, layout, panBy, viewport, withoutDone, zoomBy } from './graph'
 import type { Axis, Layout, Window } from './graph'
 
 const PANE = 'agent-tree'
@@ -38,6 +38,14 @@ function dragOf(data: unknown): { press: number; dx: number; dy: number } | unde
   return typeof press === 'number' && typeof dx === 'number' && typeof dy === 'number' ? { press, dx, dy } : undefined
 }
 
+function clickOf(data: unknown): { x: number; y: number } | undefined {
+  if (typeof data !== 'object' || data === null) return undefined
+  const { click } = data as Record<string, unknown>
+  if (typeof click !== 'object' || click === null) return undefined
+  const { x, y } = click as Record<string, unknown>
+  return typeof x === 'number' && typeof y === 'number' ? { x, y } : undefined
+}
+
 const nodes = atom({ plugin: 'agent-tree', key: 'nodes' } as const, {})
 const activity = atom({ plugin: 'agent-tree', key: 'activity' } as const, {})
 const view = atom({ plugin: 'agent-tree', key: 'view' } as const, WIDTH)
@@ -47,14 +55,20 @@ const mainToolCount = atom({ plugin: 'agent-tree', key: 'mainToolCount' } as con
 const theme = atom({ plugin: 'agent-tree', key: 'theme' } as const, 'auto')
 const project = atom({ plugin: 'agent-tree', key: 'project' } as const, '')
 const hidden = atom({ plugin: 'agent-tree', key: 'hidden' } as const, false)
+const collapsed = atom({ plugin: 'agent-tree', key: 'collapsed' } as const, [])
 
 // Hooks cannot be taken back once registered, so while the pane is hidden the
 // timers are cancelled and every hook passes its event straight on.
 let timers: Timer[] = []
 
+// The tree as the desktop draws it.
+async function drawnLayout($: EngineInterface): Promise<Layout> {
+  const [all, hide, folds] = await Promise.all([read($, nodes), read($, hideDone), read($, collapsed)])
+  return layout(hide ? withoutDone(all) : all, folds)
+}
+
 async function moveView($: EngineInterface, move: (lay: Layout, v: ViewState) => ViewState): Promise<void> {
-  const [all, hide] = await Promise.all([read($, nodes), read($, hideDone)])
-  const lay = layout(hide ? withoutDone(all) : all)
+  const lay = await drawnLayout($)
   await update($, view, v => move(lay, v))
 }
 
@@ -184,6 +198,7 @@ export const register: Register = on => {
       await update($, activity, () => ({}))
       await update($, view, () => WIDTH)
       await update($, mainToolCount, () => 0)
+      await update($, collapsed, () => [])
     }
 
     return next(e)
@@ -235,8 +250,15 @@ export const register: Register = on => {
     }
   })
 
-  // Dragging the drawing pans the window, the tree following the pointer.
+  // Dragging the drawing pans the window, the tree following the pointer;
+  // clicking a fold mark folds or unfolds what is under its node.
   on('ui.message', { requestId: PANE, element: 'drag' }, async ($, e) => {
+    const click = clickOf(e.data)
+    if (click) {
+      const id = foldAt(await drawnLayout($), drawnWindow, click.x * CELL_W, click.y * CELL_H, { x: CELL_W / 2, y: CELL_H / 2 })
+      if (id !== undefined) await update($, collapsed, folds => (folds.includes(id) ? folds.filter(one => one !== id) : [...folds, id]))
+      return {}
+    }
     const drag = dragOf(e.data)
     if (!drag) return {}
     if (dragStart?.press !== drag.press) dragStart = { press: drag.press, left: drawnWindow.x, top: drawnWindow.y }
@@ -250,7 +272,7 @@ export const register: Register = on => {
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
-    const [all, hide, acts, v, at, mainTools, look, name] = await Promise.all([
+    const [all, hide, acts, v, at, mainTools, look, name, folds] = await Promise.all([
       read($, nodes),
       read($, hideDone),
       read($, activity),
@@ -259,6 +281,7 @@ export const register: Register = on => {
       read($, mainToolCount),
       read($, theme),
       read($, project),
+      read($, collapsed),
     ])
     const drawingRows = Math.max(4, e.props.scroll.bodyRows - TOOLBAR_ROWS - SPARE_ROWS)
     const frame = {
@@ -337,8 +360,9 @@ export const register: Register = on => {
       project: name,
       focus: e.props.view.agentId,
       frame,
+      collapsed: folds,
     })
-    const lay = layout(shown)
+    const lay = layout(shown, folds)
     const win = viewport(lay, v, frame)
     drawnWindow = win
     const arrow = (axis: Axis, direction: number, key: string, glyph: string) => (

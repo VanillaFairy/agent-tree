@@ -16,8 +16,17 @@ export const SLIDE_MS = 240
 const MAX_ZOOM = 8
 // Zoom 1 never magnifies past this, so a small tree stays card-sized.
 const MAX_FIT_SCALE = 1.25
+// The fold mark sits centred on a card's right edge, where its wires leave;
+// text level with it stops this far short of the mark.
+const FOLD_R = 7
+const FOLD_CLEAR = 6
 
-// `x`, `y` are the card's top-left corner.
+// What a folded node keeps out of sight: how many agents, and whether any
+// of them still runs.
+export type Folded = { hidden: number; running: boolean }
+
+// `x`, `y` are the card's top-left corner. `fold` is set on a node with
+// agents under it: 'open' while they show.
 export type Placed = {
   id: string
   node?: AgentNode
@@ -25,6 +34,7 @@ export type Placed = {
   x: number
   y: number
   depth: number
+  fold?: 'open' | Folded
 }
 
 export type Layout = { placed: Placed[]; width: number; height: number }
@@ -52,13 +62,21 @@ export function withoutDone(nodes: Record<string, AgentNode>): Record<string, Ag
   return kept
 }
 
+function folded(kids: Map<string, AgentNode[]>, id: string): Folded {
+  const under = (one: string): AgentNode[] => (kids.get(one) ?? []).flatMap(kid => [kid, ...under(kid.id)])
+  const all = under(id)
+  return { hidden: all.length, running: all.some(n => n.status === 'running') }
+}
+
 // A sideways tree: one column per depth, siblings stacked in start order, and
-// a parent level with the middle of its children.
-export function layout(nodes: Record<string, AgentNode>): Layout {
+// a parent level with the middle of its children. Nothing under a node in
+// `collapsed` is placed.
+export function layout(nodes: Record<string, AgentNode>, collapsed: readonly string[] = []): Layout {
   const kids = childrenOf(nodes)
+  const shown = (id: string) => (collapsed.includes(id) ? [] : (kids.get(id) ?? []))
   const span = new Map<string, number>()
   const measure = (id: string): number => {
-    const parts = (kids.get(id) ?? []).map(c => measure(c.id))
+    const parts = shown(id).map(c => measure(c.id))
     const height = Math.max(NODE_H, parts.reduce((a, b) => a + b, 0) + GAP_Y * Math.max(0, parts.length - 1))
     span.set(id, height)
     return height
@@ -66,14 +84,17 @@ export function layout(nodes: Record<string, AgentNode>): Layout {
   const total = measure(ROOT)
 
   const placed: Placed[] = []
-  let deepest = 0
+  // Folded columns still count toward the width, so folding never rescales
+  // the drawing out from under the pointer.
+  const depthOf = (id: string): number => Math.max(0, ...(kids.get(id) ?? []).map(k => 1 + depthOf(k.id)))
+  const deepest = depthOf(ROOT)
   const place = (id: string, node: AgentNode | undefined, parent: string | undefined, top: number, depth: number): number => {
     const here: Placed = { id, node, parent, x: PAD + depth * (NODE_W + GAP_X), y: top, depth }
+    if (kids.has(id)) here.fold = collapsed.includes(id) ? folded(kids, id) : 'open'
     placed.push(here)
-    deepest = Math.max(deepest, depth)
     const ys: number[] = []
     let at = top
-    for (const child of kids.get(id) ?? []) {
+    for (const child of shown(id)) {
       ys.push(place(child.id, child, id, at, depth + 1))
       at += (span.get(child.id) ?? NODE_H) + GAP_Y
     }
@@ -83,6 +104,25 @@ export function layout(nodes: Record<string, AgentNode>): Layout {
   place(ROOT, undefined, undefined, PAD, 0)
 
   return { placed, width: PAD * 2 + (deepest + 1) * NODE_W + deepest * GAP_X, height: total + PAD * 2 }
+}
+
+// The middle of a node's fold mark, in graph units.
+function foldCentre(p: Placed): { x: number; y: number } {
+  return { x: p.x + NODE_W, y: p.y + NODE_H / 2 }
+}
+
+// The node whose fold mark is under drawing pixel (`px`, `py`), allowing
+// `slack` pixels either way for a pointer known only to the cell.
+export function foldAt(lay: Layout, win: Window, px: number, py: number, slack: { x: number; y: number }): string | undefined {
+  const gx = win.x + px / win.scale
+  const gy = win.y + py / win.scale
+  const reach = (s: number) => FOLD_R + s / win.scale
+  const near = lay.placed
+    .filter(p => p.fold !== undefined)
+    .map(p => ({ id: p.id, at: foldCentre(p) }))
+    .filter(({ at }) => Math.abs(gx - at.x) <= reach(slack.x) && Math.abs(gy - at.y) <= reach(slack.y))
+    .sort((a, b) => Math.hypot(gx - a.at.x, gy - a.at.y) - Math.hypot(gx - b.at.x, gy - b.at.y))
+  return near[0]?.id
 }
 
 // The drawing's size in CSS pixels: the room below the toolbar.
@@ -223,12 +263,18 @@ text{font-family:system-ui,-apple-system,"Segoe UI",sans-serif;white-space:pre}
 .wire{fill:none;stroke:var(--line);stroke-width:1.2}
 .pulse{fill:none;stroke:var(--live);stroke-width:2;stroke-linecap:round;stroke-dasharray:6 90;animation:flow 1.6s linear infinite}
 .hint{fill:var(--muted);font-size:12px}
+.fold circle{fill:none;stroke:var(--muted);stroke-width:1.2}
+.fold path{stroke:var(--muted);stroke-width:1.4;stroke-linecap:round}
+.fold.live circle{stroke:var(--live)}.fold.live path{stroke:var(--live)}
+.fold text{fill:var(--muted);font-size:11px;font-variant-numeric:tabular-nums}
+.fold.live text{fill:var(--live)}
 @keyframes flow{from{stroke-dashoffset:96}to{stroke-dashoffset:0}}
 @media (prefers-reduced-motion: reduce){.pulse{animation:none;stroke-dasharray:none;opacity:.6}}`
 
-// Right out of the parent, down or up, and right into the child, with soft corners.
+// Right out of the parent's fold mark, down or up, and right into the child,
+// with soft corners.
 function wire(from: Placed, to: Placed): string {
-  const x0 = from.x + NODE_W
+  const x0 = from.x + NODE_W + FOLD_R
   const y0 = from.y + NODE_H / 2
   const x1 = to.x
   const y1 = to.y + NODE_H / 2
@@ -259,7 +305,8 @@ function agentCard(p: Placed, n: AgentNode, events: readonly ToolEvent[] | undef
   const tx = x + 26
   const room = NODE_W - 36
   const doing = n.status === 'running' ? current(events) : undefined
-  const [meta, more] = twoLines(`${n.type}   ${n.toolCount} tools`, room)
+  // The type and tool count sit level with the fold mark, so give way to it.
+  const [meta, more] = twoLines(`${n.type}   ${n.toolCount} tools`, room - FOLD_R - FOLD_CLEAR)
   // The run time sits on the dot's row at the card's right edge, and the
   // title gives way to it, never the other way round.
   const time = elapsed((n.endedAt ?? now) - n.startedAt)
@@ -279,10 +326,22 @@ ${more === ''
 <text class="meta" x="${tx}" y="${y + 50}">${esc(more)}</text>`}${third}</g>`
 }
 
-// Right-aligned against its column's edge, where the wires leave it.
+// − while the agents under the node show, + with their count while they
+// don't; live-coloured while one of them still runs.
+function foldMark(p: Placed): string {
+  if (p.fold === undefined) return ''
+  const { x, y } = foldCentre(p)
+  const arm = FOLD_R - 3
+  const minus = `M${x - arm} ${y} H${x + arm}`
+  if (p.fold === 'open') return `<g class="fold"><circle cx="${x}" cy="${y}" r="${FOLD_R}"/><path d="${minus}"/></g>`
+  return `<g class="fold${p.fold.running ? ' live' : ''}"><circle cx="${x}" cy="${y}" r="${FOLD_R}"/><path d="${minus} M${x} ${y - arm} V${y + arm}"/>
+<text x="${x + FOLD_R + 5}" y="${y + 4}">${p.fold.hidden}</text></g>`
+}
+
+// Right-aligned against its column's edge, short of the fold mark there.
 function rootCard(p: Placed, project: string, events: readonly ToolEvent[] | undefined, mainTools: number, agents: number, running: number): string {
   const y = p.y
-  const x = p.x + NODE_W - 10
+  const x = p.x + NODE_W - FOLD_R - FOLD_CLEAR
   const room = NODE_W + PAD - 14
   const doing = current(events)
   const meta = agents === 0 ? `this session   ${mainTools} tools` : `this session   ${agents} agents   ${running} running`
@@ -303,10 +362,11 @@ export type GraphInput = {
   // The agent whose transcript is on screen beside the pane, if any.
   focus?: string
   frame: Frame
+  collapsed: readonly string[]
 }
 
 export function graphSvg(g: GraphInput): { source: string; alt: string } {
-  const lay = layout(g.nodes)
+  const lay = layout(g.nodes, g.collapsed)
   const vp = viewport(lay, g.view, g.frame)
   const where = new Map(lay.placed.map(p => [p.id, p]))
   const agents = Object.values(g.nodes)
@@ -325,6 +385,7 @@ export function graphSvg(g: GraphInput): { source: string; alt: string } {
       ? agentCard(p, p.node, g.activity[p.id], g.now, p.id === g.focus)
       : rootCard(p, g.project, g.activity[ROOT], g.mainToolCount, agents.length, running),
   )
+  const folds = lay.placed.map(foldMark)
   const hint =
     agents.length === 0
       ? `<text class="hint" x="${PAD}" y="${PAD + NODE_H + 30}">Subagents show up here as they start</text>`
@@ -338,9 +399,13 @@ export function graphSvg(g: GraphInput): { source: string; alt: string } {
     from !== undefined && Math.abs(from.x - vp.x) + Math.abs(from.y - vp.y) > 0.5
       ? `<animate attributeName="viewBox" from="${box(from.x, from.y)}" to="${box(vp.x, vp.y)}" dur="${SLIDE_MS}ms" fill="freeze" calcMode="spline" keyTimes="0;1" keySplines=".3 0 .2 1"/>`
       : ''
-  const source = `<svg xmlns="http://www.w3.org/2000/svg" width="${g.frame.width}" height="${g.frame.height}" viewBox="${box(vp.x, vp.y)}">${slide}<style>${themeCss(g.theme)}${CSS}</style>${wires.join('')}${cards.join('')}${hint}</svg>`
+  const source = `<svg xmlns="http://www.w3.org/2000/svg" width="${g.frame.width}" height="${g.frame.height}" viewBox="${box(vp.x, vp.y)}">${slide}<style>${themeCss(g.theme)}${CSS}</style>${wires.join('')}${cards.join('')}${folds.join('')}${hint}</svg>`
   const alt = lay.placed
-    .map(p => `${'  '.repeat(p.depth)}${p.node ? `${p.node.description} (${p.node.type}, ${STATUS_WORD[p.node.status]})` : g.project || 'Session'}`)
+    .map(p => {
+      const name = p.node ? `${p.node.description} (${p.node.type}, ${STATUS_WORD[p.node.status]})` : g.project || 'Session'
+      const fold = p.fold === undefined || p.fold === 'open' ? '' : ` [${p.fold.hidden} folded${p.fold.running ? ', running' : ''}]`
+      return `${'  '.repeat(p.depth)}${name}${fold}`
+    })
     .join('\n')
   return { source, alt }
 }
