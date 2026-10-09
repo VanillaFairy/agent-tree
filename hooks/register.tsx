@@ -1,5 +1,5 @@
 import { atom, read, update } from 'claude-code'
-import type { AgentInfo, EngineInterface, Register, UiPressArgument } from 'claude-code'
+import type { AgentInfo, EngineInterface, Register, Timer, UiPressArgument } from 'claude-code'
 
 import type { AgentNode, AgentStatus, ToolEvent, ViewState } from '../types'
 import { argSummary, finished, started } from './activity'
@@ -46,6 +46,11 @@ const now = atom({ plugin: 'agent-tree', key: 'now' } as const, 0)
 const mainToolCount = atom({ plugin: 'agent-tree', key: 'mainToolCount' } as const, 0)
 const theme = atom({ plugin: 'agent-tree', key: 'theme' } as const, 'auto')
 const project = atom({ plugin: 'agent-tree', key: 'project' } as const, '')
+const hidden = atom({ plugin: 'agent-tree', key: 'hidden' } as const, false)
+
+// Hooks cannot be taken back once registered, so while the pane is hidden the
+// timers are cancelled and every hook passes its event straight on.
+let timers: Timer[] = []
 
 async function moveView($: EngineInterface, move: (lay: Layout, v: ViewState) => ViewState): Promise<void> {
   const [all, hide] = await Promise.all([read($, nodes), read($, hideDone)])
@@ -112,38 +117,63 @@ async function syncTheme($: EngineInterface): Promise<void> {
   await setTheme($, row?.value)
 }
 
-export const register: Register = on => {
-  on('session.start', async ($, e, next) => {
-    await $.command.register({ name: 'agent-tree', description: 'Show this session’s subagent tree' })
+function stopTimers(): void {
+  for (const timer of timers) timer.cancel()
+  timers = []
+}
+
+async function show($: EngineInterface): Promise<void> {
+  stopTimers()
+  timers = [
     // Redraws only while an agent runs, so its run time counts up.
     $.clock.every(TICK_MS, () => {
       tick($).catch(() => undefined)
-    })
+    }),
     // `/theme` and the app's own appearance setting may change it without a
     // config.set reaching us, so the setting is also re-read now and then.
     $.clock.every(5000, () => {
       syncTheme($).catch(() => undefined)
-    })
+    }),
+  ]
+  await Promise.all([refresh($), syncTheme($).catch(() => undefined)])
+}
+
+export const register: Register = on => {
+  on('session.start', async ($, e, next) => {
+    await $.command.register({ name: 'agent-tree', description: 'Show this session’s subagent tree' })
     const cwd = await $.session.cwd()
     await update($, project, () => cwd.split(/[\\/]/).filter(Boolean).pop() ?? '')
-    await Promise.all([refresh($), syncTheme($).catch(() => undefined)])
-    // Every session opens its own pane, so switching sessions shows that
-    // session's tree. Best effort: a surface with no room waits or refuses.
-    $.ui.open(OPEN).catch(() => undefined)
+    if (!(await read($, hidden))) {
+      await show($)
+      // Every session opens its own pane, so switching sessions shows that
+      // session's tree. Best effort: a surface with no room waits or refuses.
+      $.ui.open(OPEN).catch(() => undefined)
+    }
 
     return next(e)
   })
 
   on('command.run', { command: 'agent-tree' }, async $ => {
-    await refresh($)
+    await update($, hidden, () => false)
+    await show($)
     await $.ui.open(OPEN)
 
     return { text: 'Agent tree opened.' }
   })
 
+  // A pane dropped on an unload never reaches here, so every close heard is
+  // someone hiding it on purpose.
+  on('ui.close', { id: PANE }, async ($, e, next) => {
+    const result = await next(e)
+    stopTimers()
+    await update($, hidden, () => true)
+
+    return result
+  })
+
   on('config.set', { key: 'theme' }, async ($, e, next) => {
     const result = await next(e)
-    await setTheme($, result.value)
+    if (!(await read($, hidden))) await setTheme($, result.value)
 
     return result
   })
@@ -160,6 +190,7 @@ export const register: Register = on => {
   })
 
   on('classic.SubagentStart', async ($, e, next) => {
+    if (await read($, hidden)) return next(e)
     await refresh($)
     $.ui.open(OPEN).catch(() => undefined)
 
@@ -168,12 +199,13 @@ export const register: Register = on => {
 
   on('classic.SubagentStop', async ($, e, next) => {
     const result = await next(e)
-    await refresh($)
+    if (!(await read($, hidden))) await refresh($)
 
     return result
   })
 
   on('tool.call', async ($, e, next) => {
+    if (await read($, hidden)) return next(e)
     const tool = String(e.tool)
     const key = e.agentId ?? ROOT
     const known = key === ROOT || (await read($, nodes))[key] !== undefined

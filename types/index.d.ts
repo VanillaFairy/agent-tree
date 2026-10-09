@@ -48,6 +48,8 @@ declare module 'claude-code' {
       theme: string
       // The session's project folder name, the root node's label.
       project: string
+      // The person closed the pane; only /agent-tree brings it back.
+      hidden: boolean
     }
   }
 }

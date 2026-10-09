@@ -1,5 +1,5 @@
 import { expect, mock, test } from 'claude-code/testing'
-import type { TestBody } from 'claude-code/testing'
+import type { Plugin, TestBody } from 'claude-code/testing'
 import type { AgentInfo } from 'claude-code'
 
 import type { ViewState } from '../types'
@@ -305,6 +305,54 @@ test('a running agent’s run time shows whole however long its title, and turns
     expect(time).toBe(elapsed(at - 250))
     expect(title.endsWith('…')).toBe(true)
   }
+})
+
+// Stands in for the person's close mark, which a test cannot press.
+const CLOSER: Plugin = {
+  name: 'closer',
+  register(on) {
+    on('command.run', { command: 'close-agent-tree' }, async $ => {
+      await $.ui.close({ id: 'agent-tree' })
+      return { text: '' }
+    })
+  },
+}
+
+test('a pane the person closed stays closed and stops working until /agent-tree', { plugins: [CLOSER] }, async ($, on) => {
+  const clock = mock.clock(on, { now: 1000 })
+  let opens = 0
+  let lists = 0
+  on('agent.list', async () => {
+    lists++
+    return { value: [PARENT] }
+  })
+  on('classic.SubagentStart', async () => ({}))
+  on('command.register', async (_, e) => ({ value: { command: e.name } }))
+  on('session.cwd', async () => ({ value: '/work/app' }))
+  on('config.list', async () => ({ value: [] }))
+  on('ui.open', async () => {
+    opens++
+    return { value: { isPlaced: true } }
+  })
+  on('ui.close', async () => ({ value: undefined }))
+  on('command.run', async () => ({ text: '' }))
+  on('session.start', async (_, e) => ({ cwd: e.cwd }))
+  await $.session.start({ cwd: '/work/app', surface: 'desktop', isInteractive: true })
+  await $.classic.SubagentStart({ agent_id: 'a1', agent_type: 'Explore' })
+  const openedBefore = opens
+
+  await $.command.run({ command: 'close-agent-tree', args: '', origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 200 } })
+  const listedAtClose = lists
+  await $.classic.SubagentStart({ agent_id: 'a2', agent_type: 'scout' })
+  await clock.advance(10_000)
+  expect(opens).toBe(openedBefore)
+  expect(lists).toBe(listedAtClose)
+
+  await $.command.run({ command: 'agent-tree', args: '', origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 200 } })
+  expect(opens).toBe(openedBefore + 1)
+  const listedAtOpen = lists
+  await clock.advance(10_000)
+  expect(lists).toBeGreaterThan(listedAtOpen)
 })
 
 test('the run time keeps counting seconds past an hour', () => {
