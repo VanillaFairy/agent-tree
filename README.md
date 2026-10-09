@@ -34,7 +34,7 @@ If you load several plugin folders this way, separate them with `;` on Windows a
 
 ## How to use
 
-The pane opens on its own when a session starts, and each session shows its own tree, so switching sessions switches the tree too. If you've closed it, `/agent-tree` brings it back.
+The pane opens on its own when a session starts, and each session shows its own tree, so switching sessions switches the tree too. Once you close it, it stays closed for that session and stops tracking agents, even when new subagents start. `/agent-tree` brings it back.
 
 ![The agent-tree pane showing a session with six subagents](docs/screenshot.png)
 
